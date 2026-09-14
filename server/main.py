@@ -461,7 +461,8 @@ What is the next action you should take to accomplish the goal?
             # Parse response
             response_text = response.choices[0].message.content
             response_json = json.loads(response_text)
-            
+            print("Response Json")
+            print(response_json)
             # Validate response
             groq_response = GroqResponse(**response_json)
             
@@ -488,25 +489,52 @@ What is the next action you should take to accomplish the goal?
             )
     
     def _format_observation(self, observation: PageObservation) -> str:
-        """Format observation for LLM"""
+        """Format rich browser observation for agent reasoning"""
+
         lines = [
             f"URL: {observation.url}",
-            f"Title: {observation.title}",
-            f"Elements on page: {len(observation.elements)}",
-            "\nINTERACTIVE ELEMENTS:",
+            f"TITLE: {observation.title}",
+            f"VIEWPORT: {observation.viewport_width}x{observation.viewport_height}",
+            f"ELEMENT COUNT: {len(observation.elements)}",
+            "",
+            "AVAILABLE INTERACTIVE ELEMENTS:",
         ]
-        
-        for elem in observation.elements:
-            if elem.interactive:
-                text_preview = elem.text_preview or elem.placeholder or elem.aria_label or ""
-                sensitive_indicator = " [SENSITIVE]" if elem.sensitive else ""
-                lines.append(
-                    f"  {elem.agent_element_id}: <{elem.tag}> "
-                    f"'{text_preview[:50]}'{sensitive_indicator}"
-                )
-        
-        return "\n".join(lines)
 
+        for elem in observation.elements:
+            if not elem.interactive:
+                continue
+
+            parts = [
+                f"ID={elem.agent_element_id}",
+                f"TAG=<{elem.tag}>",
+            ]
+
+            if elem.role:
+                parts.append(f"ROLE={elem.role}")
+
+            if elem.element_type:
+                parts.append(f"TYPE={elem.element_type}")
+
+            if elem.text_preview:
+                parts.append(f"TEXT=\"{elem.text_preview[:100]}\"")
+
+            if elem.placeholder:
+                parts.append(f"PLACEHOLDER=\"{elem.placeholder[:100]}\"")
+
+            if elem.aria_label:
+                parts.append(f"ARIA_LABEL=\"{elem.aria_label[:100]}\"")
+
+            parts.append(f"VISIBLE={elem.visible}")
+            parts.append(f"ENABLED={elem.enabled}")
+
+            if elem.sensitive:
+                parts.append(
+                    f"SENSITIVE={elem.sensitive_type or 'unknown'}"
+                )
+
+            lines.append("  - " + " | ".join(parts))
+
+        return "\n".join(lines)
 
 # ============================================================================
 # PRIVACY PROTECTION
@@ -603,12 +631,10 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:5500",
-        "http://127.0.0.1:5500",
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
+        "https://github.com",
+        "https://www.github.com",
     ],
-    allow_origin_regex=r"^chrome-extension://.*$",
+    allow_origin_regex=r"chrome-extension://.*|moz-extension://.*", 
     allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization"],

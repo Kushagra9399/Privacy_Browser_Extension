@@ -25,9 +25,9 @@
     {
       "matches": ["<all_urls>"],
       "js": [
-        "node_modules/onnxruntime-web/dist/ort.all.min.js",
         "utils.js",
         "privacy-filter.js",
+        "lib/ort/ort.min.js",
         "vision-processor.js",
         "command-executor.js",
         "session-manager.js",
