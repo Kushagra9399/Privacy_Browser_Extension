@@ -254,6 +254,16 @@ class ServerComm {
     constructor(serverUrl) {
         this.serverUrl = serverUrl;
         this.requestId = 0;
+        this.allowVisualServerRequests = false;
+    }
+
+    /**
+     * Explicitly enable or disable the legacy visual server endpoint.
+     * The default is local-only; complex agent sessions use their own
+     * server path and do not need this endpoint.
+     */
+    setVisualServerEnabled(enabled) {
+        this.allowVisualServerRequests = enabled === true;
     }
 
     /**
@@ -346,6 +356,17 @@ class ServerComm {
         const reqId = this.requestId;
         
         try {
+            if (endpoint === '/api/process-screen' && !this.allowVisualServerRequests) {
+                Logger.log(
+                    'COMM',
+                    'Blocked legacy visual server request: local-only mode'
+                );
+                return {
+                    commands: [],
+                    localOnly: true
+                };
+            }
+
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), timeout);
             const safeData = this.prepareRequestData(endpoint, data);
