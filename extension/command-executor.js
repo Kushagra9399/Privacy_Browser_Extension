@@ -172,9 +172,37 @@ class CommandExecutor {
             throw new Error(`Element not found for click: ${JSON.stringify(command)}`);
         }
 
+        const validation = this.validateActionableElement(element, 'click');
+        if (!validation.valid) {
+            Logger.warn(
+                'EXECUTOR',
+                `Blocked click: ${validation.reason}`
+            );
+            return {
+                clicked: false,
+                blocked: true,
+                errorCode: validation.errorCode,
+                reason: validation.reason
+            };
+        }
+
         // Scroll element into view
         element.scrollIntoView({ behavior: 'smooth', block: 'center' });
         await this.wait(500);
+
+        const postScrollValidation = this.validateActionableElement(element, 'click');
+        if (!postScrollValidation.valid) {
+            Logger.warn(
+                'EXECUTOR',
+                `Blocked click after scroll: ${postScrollValidation.reason}`
+            );
+            return {
+                clicked: false,
+                blocked: true,
+                errorCode: postScrollValidation.errorCode,
+                reason: postScrollValidation.reason
+            };
+        }
 
         // Trigger click
         const clickEvent = new MouseEvent('click', {
@@ -198,6 +226,130 @@ class CommandExecutor {
             clicked: true,
             element: element.tagName,
             text: element.textContent?.substring(0, 100) || ''
+        };
+    }
+
+    /**
+     * Validate that a DOM element is currently actionable.
+     * This is a local browser-side safety boundary between agent
+     * perception and command execution.
+     */
+    validateActionableElement(element, actionType = 'click') {
+        if (!element || !(element instanceof Element)) {
+            return {
+                valid: false,
+                errorCode: 'invalid_element',
+                reason: 'Target is not a valid DOM element'
+            };
+        }
+
+        if (!element.isConnected) {
+            return {
+                valid: false,
+                errorCode: 'detached_element',
+                reason: 'Target element is no longer connected to the page'
+            };
+        }
+
+        const style = window.getComputedStyle(element);
+        if (
+            style.display === 'none' ||
+            style.visibility === 'hidden' ||
+            style.pointerEvents === 'none'
+        ) {
+            return {
+                valid: false,
+                errorCode: 'not_actionable',
+                reason: 'Target element is hidden or does not accept pointer events'
+            };
+        }
+
+        if (element.hasAttribute('inert')) {
+            return {
+                valid: false,
+                errorCode: 'inert_element',
+                reason: 'Target element is inside an inert UI region'
+            };
+        }
+
+        if (
+            element instanceof HTMLButtonElement ||
+            element instanceof HTMLInputElement ||
+            element instanceof HTMLSelectElement ||
+            element instanceof HTMLTextAreaElement
+        ) {
+            if (element.disabled) {
+                return {
+                    valid: false,
+                    errorCode: 'disabled_element',
+                    reason: 'Target form control is disabled'
+                };
+            }
+        }
+
+        if (element.getAttribute('aria-disabled') === 'true') {
+            return {
+                valid: false,
+                errorCode: 'aria_disabled_element',
+                reason: 'Target element is marked aria-disabled'
+            };
+        }
+
+        if (actionType === 'type') {
+            if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+                if (element.readOnly) {
+                    return {
+                        valid: false,
+                        errorCode: 'readonly_element',
+                        reason: 'Target input is read-only'
+                    };
+                }
+            }
+        }
+
+        const rect = element.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) {
+            return {
+                valid: false,
+                errorCode: 'zero_size_element',
+                reason: 'Target element has no visible area'
+            };
+        }
+
+        if (actionType === 'click') {
+            const centerX = rect.left + rect.width / 2;
+            const centerY = rect.top + rect.height / 2;
+
+            if (
+                centerX < 0 ||
+                centerY < 0 ||
+                centerX > window.innerWidth ||
+                centerY > window.innerHeight
+            ) {
+                return {
+                    valid: false,
+                    errorCode: 'outside_viewport',
+                    reason: 'Target click point is outside the viewport'
+                };
+            }
+
+            const topElement = document.elementFromPoint(centerX, centerY);
+            if (
+                topElement &&
+                topElement !== element &&
+                !element.contains(topElement)
+            ) {
+                return {
+                    valid: false,
+                    errorCode: 'covered_element',
+                    reason: 'Target is covered by another element at its click point'
+                };
+            }
+        }
+
+        return {
+            valid: true,
+            reason: 'Target is currently actionable'
         };
     }
 
@@ -264,6 +416,16 @@ class CommandExecutor {
             throw new Error('Target element is not an input field');
         }
 
+        const validation = this.validateActionableElement(element, 'type');
+        if (!validation.valid) {
+            return {
+                typed: false,
+                blocked: true,
+                errorCode: validation.errorCode,
+                reason: validation.reason
+            };
+        }
+
         // Focus element
         element.focus();
         await this.wait(100);
@@ -314,6 +476,16 @@ class CommandExecutor {
             throw new Error('Target element is not a select');
         }
 
+        const validation = this.validateActionableElement(element, 'select');
+        if (!validation.valid) {
+            return {
+                selected: false,
+                blocked: true,
+                errorCode: validation.errorCode,
+                reason: validation.reason
+            };
+        }
+
         // Find option by value or label
         let option = null;
         if (value) {
@@ -357,6 +529,16 @@ class CommandExecutor {
             throw new Error('Form element not found');
         }
 
+        const validation = this.validateActionableElement(element, 'submit');
+        if (!validation.valid) {
+            return {
+                submitted: false,
+                blocked: true,
+                errorCode: validation.errorCode,
+                reason: validation.reason
+            };
+        }
+
         // Get the form
         const form = element.tagName.toLowerCase() === 'form' 
             ? element 
@@ -392,6 +574,16 @@ class CommandExecutor {
             throw new Error('Element not found');
         }
 
+        const validation = this.validateActionableElement(element, 'focus');
+        if (!validation.valid) {
+            return {
+                focused: false,
+                blocked: true,
+                errorCode: validation.errorCode,
+                reason: validation.reason
+            };
+        }
+
         element.focus();
         await this.wait(100);
 
@@ -418,6 +610,16 @@ class CommandExecutor {
 
         if (!element) {
             throw new Error('Element not found');
+        }
+
+        const validation = this.validateActionableElement(element, 'hover');
+        if (!validation.valid) {
+            return {
+                hovered: false,
+                blocked: true,
+                errorCode: validation.errorCode,
+                reason: validation.reason
+            };
         }
 
         const rect = element.getBoundingClientRect();
