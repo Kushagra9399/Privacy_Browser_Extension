@@ -16,8 +16,13 @@ class AgentLoopOrchestrator {
         this.isRunning = false;
         this.currentSessionId = null;
         this.stepCount = 0;
+        this.maxSteps = 20;
         this.perf = new PerformanceMonitor();
         this.errorCount = 0;
+        this.lastActionSignature = null;
+        this.repeatedActionCount = 0;
+        this.lastObservationSignature = null;
+        this.noProgressCount = 0;
         
         Logger.log('LOOP', 'AgentLoopOrchestrator initialized');
     }
@@ -47,6 +52,10 @@ class AgentLoopOrchestrator {
             this.currentSessionId = sessionId;
             this.stepCount = 0;
             this.errorCount = 0;
+            this.lastActionSignature = null;
+            this.repeatedActionCount = 0;
+            this.lastObservationSignature = null;
+            this.noProgressCount = 0;
             this.isRunning = true;
             
             Logger.log('LOOP', `Session created: ${sessionId}`);
@@ -96,13 +105,24 @@ class AgentLoopOrchestrator {
     
     /**
      * Main agent loop
-     * Runs continuously until goal is achieved or error limit reached
+     * Runs until the goal is achieved, a safety limit is reached, or repeated
+     * actions/no-progress indicate that continuing would waste resources.
      */
     async agentLoop() {
         Logger.log('LOOP', 'Entering agent loop');
         
         while (this.isRunning && this.errorCount < 3) {
             try {
+                if (this.stepCount >= this.maxSteps) {
+                    Logger.warn('LOOP', `Maximum step limit reached: ${this.maxSteps}`);
+                    this.notifyPopup({
+                        type: 'agent_step_limit',
+                        message: `Agent stopped after ${this.maxSteps} steps`
+                    });
+                    this.isRunning = false;
+                    break;
+                }
+
                 this.stepCount++;
                 Logger.log('LOOP', `=== STEP ${this.stepCount} ===`);
                 
@@ -110,11 +130,12 @@ class AgentLoopOrchestrator {
                 this.notifyPopup({
                     type: 'step_started',
                     step: this.stepCount,
-                    max_steps: 20
+                    max_steps: this.maxSteps
                 });
                 
                 // Step 1: Observe current page state and obtain next action
                 Logger.log('LOOP', 'Step 1: Observing page...');
+                const observationBefore = this.getProgressSignature();
                 const action = await this.perf.measureAsync('AGENT_STEP', async () => {
                     if (this.sessionManager.sessionMode === 'local') {
                         return this.getLocalAction();
@@ -124,8 +145,19 @@ class AgentLoopOrchestrator {
                 
                 if (!action) {
                     Logger.warn('LOOP', 'Observe returned no action');
-                    await this.delay(1000);
+                    this.errorCount++;
+                    if (this.errorCount >= 3) {
+                        this.stopForSafety('No action was produced repeatedly');
+                        break;
+                    }
+                    await this.delay(500);
                     continue;
+                }
+
+                const actionGuard = this.checkActionRepetition(action);
+                if (!actionGuard.allowed) {
+                    this.stopForSafety(actionGuard.reason);
+                    break;
                 }
                 
                 Logger.log('LOOP', `Step 2: Received action: ${action.type}`);
@@ -150,14 +182,16 @@ class AgentLoopOrchestrator {
                 Logger.log('LOOP', `Step 3: Executing action...`);
                 const result = await this.executeActionSafely(action);
                 
-                if (!result.success) {
-                    Logger.error('LOOP', `Action failed: ${result.errorCode}`);
+                if (!result.success || result.result?.blocked) {
+                    const errorCode = result.errorCode || result.result?.errorCode || 'blocked_action';
+                    const errorMessage = result.errorMessage || result.result?.reason || 'Action was blocked';
+                    Logger.error('LOOP', `Action failed: ${errorCode}`);
                     this.errorCount++;
                     
                     this.notifyPopup({
                         type: 'action_failed',
-                        error_code: result.errorCode,
-                        error_message: result.errorMessage,
+                        error_code: errorCode,
+                        error_message: errorMessage,
                         error_count: this.errorCount
                     });
                     
@@ -166,19 +200,15 @@ class AgentLoopOrchestrator {
                         await this.sessionManager.reportActionResult(
                             action,
                             false,
-                            result.errorCode,
-                            result.errorMessage
+                            errorCode,
+                            errorMessage
                         );
                     }
                     
-                    // If too many errors, stop
-                    if (this.errorCount >= 3) {
-                        Logger.error('LOOP', 'Too many consecutive errors, stopping');
-                        this.notifyPopup({
-                            type: 'agent_error_limit',
-                            message: 'Too many errors, agent stopped'
-                        });
-                        this.isRunning = false;
+                    // A blocked action is especially likely to repeat forever.
+                    if (result.result?.blocked || this.errorCount >= 3) {
+                        this.stopForSafety(`Action blocked or repeated: ${errorMessage}`);
+                        break;
                     }
                     
                     continue;
@@ -205,9 +235,30 @@ class AgentLoopOrchestrator {
                 } else {
                     Logger.log('LOOP', 'Step 4: Local action complete; no server request');
                 }
+
+                // Detect validation errors such as invalid email/password fields
+                // after a form interaction. This prevents blind retry loops.
+                const validationError = this.detectPageValidationError();
+                if (validationError) {
+                    this.stopForSafety(`Page validation error: ${validationError}`);
+                    break;
+                }
+
+                // Detect whether the action actually changed the observable page state.
+                const observationAfter = this.getProgressSignature();
+                if (observationBefore && observationAfter && observationBefore === observationAfter) {
+                    this.noProgressCount++;
+                } else {
+                    this.noProgressCount = 0;
+                }
+
+                if (this.noProgressCount >= 3) {
+                    this.stopForSafety('No observable page progress after repeated actions');
+                    break;
+                }
                 
                 // Small delay before next step
-                await this.delay(500);
+                await this.delay(300);
                 
             } catch (error) {
                 Logger.error('LOOP', 'Loop error', error);
@@ -217,8 +268,13 @@ class AgentLoopOrchestrator {
                     type: 'loop_error',
                     error_message: error.message
                 });
+
+                if (this.errorCount >= 3) {
+                    this.stopForSafety(`Repeated loop errors: ${error.message}`);
+                    break;
+                }
                 
-                await this.delay(2000);
+                await this.delay(1000);
             }
         }
         
@@ -230,6 +286,112 @@ class AgentLoopOrchestrator {
             steps_taken: this.stepCount,
             errors: this.errorCount
         });
+    }
+
+    /**
+     * Create a small, local-only signature of the current browser state.
+     * It deliberately excludes field values and other sensitive page content.
+     */
+    getProgressSignature() {
+        try {
+            const active = document.activeElement;
+            const focused = active ? `${active.tagName}:${active.id || active.getAttribute('name') || ''}` : '';
+            const visibleInteractive = Array.from(document.querySelectorAll('button, a[href], input, textarea, select, [role="button"], [role="link"]'))
+                .filter(element => {
+                    const style = window.getComputedStyle(element);
+                    const rect = element.getBoundingClientRect();
+                    return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+                })
+                .slice(0, 80)
+                .map(element => `${element.tagName}:${element.id || ''}:${element.getAttribute('aria-label') || element.textContent?.trim().substring(0, 40) || ''}`)
+                .join('|');
+            return `${location.pathname}|${window.scrollX}|${window.scrollY}|${focused}|${visibleInteractive}`;
+        } catch (error) {
+            Logger.debug('LOOP', 'Could not create progress signature', error?.message);
+            return '';
+        }
+    }
+
+    /**
+     * Prevent the same action from being executed repeatedly on the same target.
+     */
+    checkActionRepetition(action) {
+        const signature = JSON.stringify({
+            type: String(action.type || '').toLowerCase(),
+            element_id: action.element_id || null,
+            target: action.target || null,
+            selector: action.selector || null,
+            direction: action.direction || null,
+            key: action.key || null,
+            textLength: typeof action.text === 'string' ? action.text.length : null
+        });
+
+        if (signature === this.lastActionSignature) {
+            this.repeatedActionCount++;
+        } else {
+            this.lastActionSignature = signature;
+            this.repeatedActionCount = 1;
+        }
+
+        if (this.repeatedActionCount >= 3) {
+            return {
+                allowed: false,
+                reason: `Same action repeated ${this.repeatedActionCount} times without a new plan`
+            };
+        }
+
+        return { allowed: true };
+    }
+
+    /**
+     * Detect common browser-native and application validation errors locally.
+     * No field values are sent anywhere.
+     */
+    detectPageValidationError() {
+        const selectors = [
+            ':invalid',
+            '[aria-invalid="true"]',
+            '.error',
+            '.errors',
+            '.error-message',
+            '.field-error',
+            '.validation-error',
+            '[role="alert"]'
+        ];
+
+        for (const selector of selectors) {
+            const elements = document.querySelectorAll(selector);
+            for (const element of elements) {
+                const style = window.getComputedStyle(element);
+                const rect = element.getBoundingClientRect();
+                if (style.display === 'none' || style.visibility === 'hidden' || rect.width <= 0 || rect.height <= 0) {
+                    continue;
+                }
+
+                const text = String(element.textContent || element.getAttribute('aria-label') || '').trim();
+                if (text) {
+                    return text.substring(0, 160);
+                }
+
+                if (element.matches(':invalid')) {
+                    return 'A form field is invalid';
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Stop immediately when continuing would waste resources or repeat an unsafe action.
+     */
+    stopForSafety(reason) {
+        Logger.warn('LOOP', `Stopping agent for safety: ${reason}`);
+        this.notifyPopup({
+            type: 'agent_safety_stop',
+            message: reason
+        });
+        this.isRunning = false;
     }
 
     /**
@@ -446,7 +608,10 @@ class AgentLoopOrchestrator {
             running: this.isRunning,
             session_id: this.currentSessionId,
             step: this.stepCount,
-            errors: this.errorCount
+            max_steps: this.maxSteps,
+            errors: this.errorCount,
+            repeated_action_count: this.repeatedActionCount,
+            no_progress_count: this.noProgressCount
         };
     }
 }
