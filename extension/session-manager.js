@@ -239,6 +239,9 @@ class ClientSessionManager {
         this.currentGoal = null;
         this.observationCount = 0;
         this.sessionMode = 'server';
+        this.privacyFilter = typeof PrivacyFilter !== 'undefined'
+            ? new PrivacyFilter()
+            : null;
         this.elementRegistry = new ElementRegistry();
         this.perf = new PerformanceMonitor();
         
@@ -272,6 +275,36 @@ class ClientSessionManager {
     }
 
     /**
+     * Build page metadata that is safe to send to the backend.
+     * Query parameters and fragments are removed because they can contain PII.
+     */
+    getSanitizedPageContext() {
+        if (!this.privacyFilter) {
+            throw new Error('Privacy boundary unavailable: refusing network request');
+        }
+
+        // Run local privacy analysis before any server communication.
+        const redactions = this.privacyFilter.analyzePage();
+
+        const safeTitle = String(document.title || '')
+            .replace(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g, '[REDACTED]')
+            .replace(/\b\d{3}-\d{2}-\d{4}\b/g, '[REDACTED]')
+            .replace(/\b(?:\d{4}[-\s]?){3}\d{4}\b/g, '[REDACTED]')
+            .replace(/\b(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b/g, '[REDACTED]');
+
+        return {
+            origin: window.location.origin,
+            path: window.location.pathname,
+            title: safeTitle,
+            privacy: {
+                analysisCompleted: true,
+                redactionCount: redactions.length,
+                localOnly: true
+            }
+        };
+    }
+
+    /**
      * Start an agent session on the backend.
      */
     async startServerSession(userGoal) {
@@ -286,10 +319,7 @@ class ClientSessionManager {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     user_goal: userGoal,
-                    page_context: {
-                        url: window.location.href,
-                        title: document.title
-                    }
+                    page_context: this.getSanitizedPageContext()
                 })
             });
             
@@ -380,9 +410,15 @@ class ClientSessionManager {
                 tag: elem.tagName.toLowerCase(),
                 role: elem.getAttribute('role'),
                 element_type: elem.getAttribute('type'),
-                text_preview: sensitiveType ? '[REDACTED]' : (elem.textContent?.substring(0, 100) || ''),
-                placeholder: elem.getAttribute('placeholder'),
-                aria_label: elem.getAttribute('aria-label'),
+                text_preview: sensitiveType
+                    ? '[REDACTED]'
+                    : this.sanitizeObservationText(elem.textContent?.substring(0, 100) || ''),
+                placeholder: sensitiveType
+                    ? '[REDACTED]'
+                    : this.sanitizeObservationText(elem.getAttribute('placeholder') || ''),
+                aria_label: sensitiveType
+                    ? '[REDACTED]'
+                    : this.sanitizeObservationText(elem.getAttribute('aria-label') || ''),
                 visible: elem.offsetParent !== null,
                 enabled: !elem.disabled,
                 interactive: true,
@@ -408,6 +444,18 @@ class ClientSessionManager {
             elements: elements,
             screenshot_available: false
         };
+    }
+
+    /**
+     * Remove common PII patterns from observation metadata.
+     * This operates entirely inside the browser.
+     */
+    sanitizeObservationText(value) {
+        return String(value || '')
+            .replace(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g, '[REDACTED]')
+            .replace(/\b\d{3}-\d{2}-\d{4}\b/g, '[REDACTED]')
+            .replace(/\b(?:\d{4}[-\s]?){3}\d{4}\b/g, '[REDACTED]')
+            .replace(/\b(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b/g, '[REDACTED]');
     }
     
     /**
