@@ -238,6 +238,7 @@ class ClientSessionManager {
         this.isRunning = false;
         this.currentGoal = null;
         this.observationCount = 0;
+        this.sessionMode = 'server';
         this.elementRegistry = new ElementRegistry();
         this.perf = new PerformanceMonitor();
         
@@ -245,12 +246,39 @@ class ClientSessionManager {
     }
     
     /**
-     * Start new agent session
+     * Start new agent session.
+     *
+     * Kept as a backwards-compatible entry point for the existing
+     * AgentLoopOrchestrator. New routing code should explicitly choose
+     * startLocalSession() or startServerSession().
      */
     async startSession(userGoal) {
+        return this.startServerSession(userGoal);
+    }
+
+    /**
+     * Start an agent session entirely in the browser.
+     * No network request is made here.
+     */
+    async startLocalSession(userGoal) {
+        this.currentGoal = userGoal;
+        this.sessionMode = 'local';
+        this.sessionId = `local_${uuid.v4().substring(0, 8)}`;
+        this.observationCount = 0;
+        this.isRunning = true;
+
+        Logger.log('SESSION', `Local session started: ${this.sessionId}`);
+        return this.sessionId;
+    }
+
+    /**
+     * Start an agent session on the backend.
+     */
+    async startServerSession(userGoal) {
         try {
             this.currentGoal = userGoal;
-            Logger.log('SESSION', `Starting session with goal: ${userGoal}`);
+            this.sessionMode = 'server';
+            Logger.log('SESSION', `Starting server session with goal: ${userGoal}`);
             
             // Request session from server
             const response = await fetch(`${this.serverUrl}/api/agent/start`, {
@@ -271,12 +299,13 @@ class ClientSessionManager {
             
             const data = await response.json();
             this.sessionId = data.session_id;
+            this.observationCount = 0;
             this.isRunning = true;
             
-            Logger.log('SESSION', `Session started: ${this.sessionId}`);
+            Logger.log('SESSION', `Server session started: ${this.sessionId}`);
             return this.sessionId;
         } catch (error) {
-            Logger.error('SESSION', 'Failed to start session', error);
+            Logger.error('SESSION', 'Failed to start server session', error);
             throw error;
         }
     }
@@ -444,14 +473,16 @@ class ClientSessionManager {
         if (!this.sessionId) return;
         
         try {
-            await fetch(`${this.serverUrl}/api/agent/stop`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ session_id: this.sessionId })
-            });
+            if (this.sessionMode === 'server') {
+                await fetch(`${this.serverUrl}/api/agent/stop`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session_id: this.sessionId })
+                });
+            }
             
             this.isRunning = false;
-            Logger.log('SESSION', 'Session stopped');
+            Logger.log('SESSION', `${this.sessionMode === 'server' ? 'Server' : 'Local'} session stopped`);
         } catch (error) {
             Logger.error('SESSION', 'Failed to stop session', error);
         }
