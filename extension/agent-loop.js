@@ -3,8 +3,8 @@
  * 
  * This is the main execution loop that:
  * 1. Listens for user goals from popup
- * 2. Creates server session
- * 3. Repeatedly: observe → reason (Groq) → execute → repeat
+ * 2. Chooses local execution for simple goals or server reasoning for complex goals
+ * 3. Repeatedly: observe/reason → execute → repeat
  * 4. Reports progress to popup
  * 5. Handles errors and termination
  */
@@ -37,8 +37,12 @@ class AgentLoopOrchestrator {
             // Configure session manager
             this.sessionManager.serverUrl = serverUrl;
             
-            // Create server session
-            const sessionId = await this.sessionManager.startSession(userGoal);
+            // Route simple tasks locally and reserve the backend for complex reasoning.
+            const isComplex = this.isComplexGoal(userGoal);
+            const sessionId = isComplex
+                ? await this.sessionManager.startServerSession(userGoal)
+                : await this.sessionManager.startLocalSession(userGoal);
+
             this.commandExecutor.elementRegistry = this.sessionManager.elementRegistry;
             this.currentSessionId = sessionId;
             this.stepCount = 0;
@@ -46,6 +50,12 @@ class AgentLoopOrchestrator {
             this.isRunning = true;
             
             Logger.log('LOOP', `Session created: ${sessionId}`);
+            Logger.log('LOOP', `Execution mode: ${isComplex ? 'server' : 'local'}`);
+            
+            this.notifyPopup({
+                type: 'agent_mode_selected',
+                mode: isComplex ? 'server' : 'local'
+            });
             
             // Start main loop
             this.agentLoop();
@@ -56,6 +66,32 @@ class AgentLoopOrchestrator {
             this.isRunning = false;
             return false;
         }
+    }
+
+    /**
+     * Decide whether a goal needs server-side reasoning.
+     *
+     * This is intentionally conservative: ordinary browser interactions stay local,
+     * while comparison, recommendation, summarization and multi-step reasoning are
+     * escalated to the backend.
+     */
+    isComplexGoal(userGoal) {
+        const goal = String(userGoal || '').trim().toLowerCase();
+        if (!goal) return false;
+
+        const complexPatterns = [
+            /\b(compare|comparison|comparative)\b/,
+            /\b(summarize|summarise|summary)\b/,
+            /\b(recommend|recommendation|best|better|which one|which is)\b/,
+            /\b(analy[sz]e|analysis|evaluate|evaluation)\b/,
+            /\b(explain|why|reason|reasoning)\b/,
+            /\b(review|reviews|pros and cons|advantages|disadvantages)\b/,
+            /\b(multiple|several|all of|top \d+|rank|ranking)\b/,
+            /\b(extract|collect|find)\b.*\b(from|across|multiple|several|all)\b/,
+            /\b(and then|after that|then)\b.*\b(and then|after that|then)\b/
+        ];
+
+        return complexPatterns.some(pattern => pattern.test(goal));
     }
     
     /**
@@ -77,9 +113,12 @@ class AgentLoopOrchestrator {
                     max_steps: 20
                 });
                 
-                // Step 1: Observe current page state
+                // Step 1: Observe current page state and obtain next action
                 Logger.log('LOOP', 'Step 1: Observing page...');
                 const action = await this.perf.measureAsync('AGENT_STEP', async () => {
+                    if (this.sessionManager.sessionMode === 'local') {
+                        return this.getLocalAction();
+                    }
                     return await this.sessionManager.observe();
                 });
                 
@@ -122,13 +161,15 @@ class AgentLoopOrchestrator {
                         error_count: this.errorCount
                     });
                     
-                    // Report to server
-                    await this.sessionManager.reportActionResult(
-                        action,
-                        false,
-                        result.errorCode,
-                        result.errorMessage
-                    );
+                    // Only server sessions report results to the backend.
+                    if (this.sessionManager.sessionMode === 'server') {
+                        await this.sessionManager.reportActionResult(
+                            action,
+                            false,
+                            result.errorCode,
+                            result.errorMessage
+                        );
+                    }
                     
                     // If too many errors, stop
                     if (this.errorCount >= 3) {
@@ -152,14 +193,18 @@ class AgentLoopOrchestrator {
                     duration_ms: result.duration_ms
                 });
                 
-                // Step 4: Report result to server
-                Logger.log('LOOP', 'Step 4: Reporting result to server...');
-                await this.sessionManager.reportActionResult(
-                    action,
-                    true,
-                    null,
-                    null
-                );
+                // Step 4: Report result only when backend reasoning is being used.
+                if (this.sessionManager.sessionMode === 'server') {
+                    Logger.log('LOOP', 'Step 4: Reporting result to server...');
+                    await this.sessionManager.reportActionResult(
+                        action,
+                        true,
+                        null,
+                        null
+                    );
+                } else {
+                    Logger.log('LOOP', 'Step 4: Local action complete; no server request');
+                }
                 
                 // Small delay before next step
                 await this.delay(500);
@@ -185,6 +230,123 @@ class AgentLoopOrchestrator {
             steps_taken: this.stepCount,
             errors: this.errorCount
         });
+    }
+
+    /**
+     * Generate a simple browser action locally from the current DOM.
+     * This is deliberately lightweight and does not send page data to a server.
+     */
+    getLocalAction() {
+        const goal = String(this.sessionManager.currentGoal || '').trim().toLowerCase();
+        const observation = this.sessionManager.buildObservation();
+        const elements = observation.elements || [];
+
+        // Scroll requests can be handled without any DOM reasoning.
+        if (/\b(scroll|go)\b.*\bdown\b/.test(goal)) {
+            return {
+                type: 'scroll',
+                direction: 'down',
+                amount: 500,
+                reason: 'Simple scroll request handled locally'
+            };
+        }
+
+        if (/\b(scroll|go)\b.*\bup\b/.test(goal)) {
+            return {
+                type: 'scroll',
+                direction: 'up',
+                amount: 500,
+                reason: 'Simple scroll request handled locally'
+            };
+        }
+
+        // Extract the target phrase for click/focus goals.
+        const targetMatch = goal.match(/\b(?:click|press|open|focus)\s+(?:on\s+)?(?:the\s+)?(.+?)(?:\s+button)?$/i);
+        if (targetMatch) {
+            const target = targetMatch[1]
+                .replace(/\s+button$/i, '')
+                .trim();
+            const targetElement = this.findLocalElement(elements, target);
+
+            if (targetElement) {
+                return {
+                    type: /\bfocus\b/i.test(goal) ? 'focus' : 'click',
+                    element_id: targetElement.agent_element_id,
+                    reason: 'Simple DOM interaction handled locally'
+                };
+            }
+
+            return {
+                type: 'finish',
+                reason: `Could not find a visible element matching "${target}" locally`
+            };
+        }
+
+        // Search goals: type the requested query into a visible search-like input.
+        const searchMatch = goal.match(/\bsearch\s+(?:for\s+|the\s+)?["']?(.+?)["']?$/i);
+        if (searchMatch) {
+            const query = searchMatch[1].trim();
+            const searchElement = elements.find(element => {
+                const haystack = [
+                    element.element_type,
+                    element.placeholder,
+                    element.aria_label,
+                    element.text_preview
+                ].filter(Boolean).join(' ').toLowerCase();
+                return element.visible && !element.sensitive &&
+                    /search|query|keyword/.test(haystack) &&
+                    ['input', 'textarea'].includes(String(element.tag || '').toLowerCase());
+            });
+
+            if (searchElement) {
+                return {
+                    type: 'type',
+                    element_id: searchElement.agent_element_id,
+                    text: query,
+                    reason: 'Simple search request handled locally'
+                };
+            }
+
+            return {
+                type: 'finish',
+                reason: 'No visible non-sensitive search input found locally'
+            };
+        }
+
+        // If no safe local rule matches, stop instead of guessing or contacting the backend.
+        return {
+            type: 'finish',
+            reason: 'Goal requires reasoning beyond the local simple-task rules'
+        };
+    }
+
+    /**
+     * Find the best matching visible, non-sensitive DOM element.
+     */
+    findLocalElement(elements, target) {
+        const normalizedTarget = String(target || '').trim().toLowerCase();
+        if (!normalizedTarget) return null;
+
+        const candidates = elements.filter(element =>
+            element.visible &&
+            element.enabled &&
+            !element.sensitive
+        );
+
+        const exact = candidates.find(element => {
+            const values = [element.text_preview, element.aria_label, element.placeholder]
+                .filter(Boolean)
+                .map(value => String(value).trim().toLowerCase());
+            return values.some(value => value === normalizedTarget);
+        });
+        if (exact) return exact;
+
+        return candidates.find(element => {
+            const values = [element.text_preview, element.aria_label, element.placeholder]
+                .filter(Boolean)
+                .map(value => String(value).toLowerCase());
+            return values.some(value => value.includes(normalizedTarget));
+        }) || null;
     }
     
     /**
