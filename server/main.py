@@ -444,15 +444,15 @@ What is the next action you should take to accomplish the goal?
 """
             
             # Add to conversation history
-            session.conversation_history.append(AgentMessage(role="user", content=user_message))
-            
+            # session.conversation_history.append(AgentMessage(role="user", content=user_message))
+            messages = [
+                {"role": "system", "content": self.SYSTEM_PROMPT},
+                {"role": "user", "content": user_message}
+            ]
             # Call Groq API
             response = self.client.chat.completions.create(
                 model=GROQ_MODEL,
-                messages=[
-                    {"role": "system", "content": self.SYSTEM_PROMPT},
-                    *[{"role": msg.role, "content": msg.content} for msg in session.conversation_history]
-                ],
+                messages=messages,
                 temperature=0.3,  # Lower temperature for reliability
                 max_tokens=1000,
                 response_format={"type": "json_object"}
@@ -467,7 +467,7 @@ What is the next action you should take to accomplish the goal?
             groq_response = GroqResponse(**response_json)
             
             # Add to conversation history
-            session.conversation_history.append(AgentMessage(role="assistant", content=response_text))
+            # session.conversation_history.append(AgentMessage(role="assistant", content=response_text))
             
             self.logger.info(f"[{session.session_id}] Groq reasoning: {groq_response.reasoning_summary}")
             
