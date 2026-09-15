@@ -256,6 +256,91 @@ class ServerComm {
         this.requestId = 0;
     }
 
+    /**
+     * Sanitize text before it crosses the browser/server privacy boundary.
+     * This is a defense-in-depth layer; visual redaction must already happen
+     * before a screenshot is accepted for server processing.
+     */
+    sanitizeNetworkText(value) {
+        return String(value || '')
+            .replace(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g, '[REDACTED]')
+            .replace(/\b\d{3}-\d{2}-\d{4}\b/g, '[REDACTED]')
+            .replace(/\b(?:\d{4}[-\s]?){3}\d{4}\b/g, '[REDACTED]')
+            .replace(/\b(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b/g, '[REDACTED]');
+    }
+
+    /**
+     * Sanitize page structure metadata without changing its DOM action IDs.
+     */
+    sanitizePageStructure(pageStructure) {
+        if (!pageStructure || typeof pageStructure !== 'object') {
+            return pageStructure;
+        }
+
+        const sanitizeValue = (value, key = '') => {
+            if (typeof value === 'string') {
+                if (key === 'url') {
+                    try {
+                        const parsed = new URL(value);
+                        return `${parsed.origin}${parsed.pathname}`;
+                    } catch (error) {
+                        return this.sanitizeNetworkText(value);
+                    }
+                }
+                return this.sanitizeNetworkText(value);
+            }
+
+            if (Array.isArray(value)) {
+                return value.map(item => sanitizeValue(item));
+            }
+
+            if (value && typeof value === 'object') {
+                const result = {};
+                for (const [childKey, childValue] of Object.entries(value)) {
+                    result[childKey] = sanitizeValue(childValue, childKey);
+                }
+                return result;
+            }
+
+            return value;
+        };
+
+        return sanitizeValue(pageStructure);
+    }
+
+    /**
+     * Enforce the local privacy boundary for visual requests.
+     * A screenshot is never sent unless the local vision pipeline supplied
+     * a redaction mask alongside it.
+     */
+    prepareRequestData(endpoint, data) {
+        if (endpoint !== '/api/process-screen') {
+            return data;
+        }
+
+        if (!data || typeof data !== 'object') {
+            throw new Error('Privacy boundary rejected visual request: invalid payload');
+        }
+
+        if (!data.screenshot) {
+            throw new Error('Privacy boundary rejected visual request: screenshot is missing');
+        }
+
+        if (!data.redactionMask || !Array.isArray(data.redactionMask.redactions)) {
+            throw new Error('Privacy boundary rejected visual request: local redaction mask is missing');
+        }
+
+        return {
+            ...data,
+            pageStructure: this.sanitizePageStructure(data.pageStructure),
+            privacy: {
+                localRedactionApplied: true,
+                redactionCount: data.redactionMask.redactions.length,
+                boundary: 'client'
+            }
+        };
+    }
+
     async sendRequest(endpoint, data, timeout = 10000) {
         this.requestId++;
         const reqId = this.requestId;
@@ -263,6 +348,7 @@ class ServerComm {
         try {
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), timeout);
+            const safeData = this.prepareRequestData(endpoint, data);
 
             const response = await fetch(`${this.serverUrl}${endpoint}`, {
                 method: 'POST',
@@ -270,7 +356,7 @@ class ServerComm {
                     'Content-Type': 'application/json',
                     'X-Request-ID': reqId.toString()
                 },
-                body: JSON.stringify(data),
+                body: JSON.stringify(safeData),
                 signal: controller.signal
             });
 
