@@ -72,6 +72,17 @@ class ExtensionManager {
             }
         });
 
+        // Dedicated extension port for background -> offscreen communication.
+        // runtime.connect() does not connect to content scripts, so page scripts
+        // cannot accidentally answer these internal model requests.
+        chrome.runtime.onConnect.addListener((port) => {
+            if (port.name !== 'privacy-browser-offscreen-ai') {
+                return;
+            }
+
+            Logger.log('BG', 'Offscreen AI port connected');
+        });
+
         // Listen for tab activation
         chrome.tabs.onActivated.addListener((activeInfo) => {
             this.handleTabActivated(activeInfo.tabId);
@@ -118,75 +129,64 @@ class ExtensionManager {
     async handleOffscreenVisionRequest(request) {
         await this.ensureOffscreenDocument();
 
-        return new Promise((resolve) => {
-            const timeout = setTimeout(() => {
-                resolve({
-                    success: false,
-                    error: 'Offscreen vision inference timed out'
-                });
-            }, 15000);
-
-            chrome.runtime.sendMessage(
-                {
-                    type: 'run_offscreen_vision',
-                    width: request.width,
-                    height: request.height,
-                    pixels: request.pixels
-                },
-                (response) => {
-                    clearTimeout(timeout);
-
-                    if (chrome.runtime.lastError) {
-                        resolve({
-                            success: false,
-                            error: chrome.runtime.lastError.message
-                        });
-                        return;
-                    }
-
-                    resolve(response || {
-                        success: false,
-                        error: 'No response from offscreen vision document'
-                    });
-                }
-            );
-        });
+        return this.sendOffscreenRequest({
+            type: 'run_offscreen_vision',
+            width: request.width,
+            height: request.height,
+            pixels: request.pixels
+        }, 15000);
     }
 
     async handleOffscreenReasoningRequest(request) {
         await this.ensureOffscreenDocument();
 
+        return this.sendOffscreenRequest({
+            type: 'run_offscreen_reasoning',
+            goal: request.goal,
+            observation: request.observation
+        }, 30000);
+    }
+
+    async sendOffscreenRequest(request, timeoutMs) {
         return new Promise((resolve) => {
+            let settled = false;
+            const finish = (result) => {
+                if (settled) return;
+                settled = true;
+                resolve(result);
+            };
+
             const timeout = setTimeout(() => {
-                resolve({
+                finish({
                     success: false,
-                    error: 'Offscreen local reasoning timed out'
+                    error: 'Offscreen local AI request timed out'
                 });
-            }, 30000);
+            }, timeoutMs);
 
-            chrome.runtime.sendMessage(
-                {
-                    type: 'run_offscreen_reasoning',
-                    goal: request.goal,
-                    observation: request.observation
-                },
-                (response) => {
-                    clearTimeout(timeout);
+            const port = chrome.runtime.connect({
+                name: 'privacy-browser-offscreen-ai'
+            });
 
-                    if (chrome.runtime.lastError) {
-                        resolve({
-                            success: false,
-                            error: chrome.runtime.lastError.message
-                        });
-                        return;
-                    }
+            port.onMessage.addListener((response) => {
+                clearTimeout(timeout);
+                finish(response || {
+                    success: false,
+                    error: 'No response from offscreen local AI'
+                });
+                port.disconnect();
+            });
 
-                    resolve(response || {
+            port.onDisconnect.addListener(() => {
+                clearTimeout(timeout);
+                if (chrome.runtime.lastError) {
+                    finish({
                         success: false,
-                        error: 'No response from offscreen local reasoning model'
+                        error: chrome.runtime.lastError.message
                     });
                 }
-            );
+            });
+
+            port.postMessage(request);
         });
     }
 
@@ -255,7 +255,7 @@ if (typeof Logger === 'undefined') {
             console.error(`[${module}] ${message}`, error || '');
         },
         warn: (module, message) => {
-            console.warn(`[${module}] ${message}`);
+            console.warn(`[${module}] [${module}] ${message}`);
         }
     };
 }
