@@ -20,50 +20,30 @@ class ExtensionManager {
                         this.handleContentReady(sender.tab, sender.frameId);
                         sendResponse({ success: true });
                         break;
-
                     case 'processing_result':
                         this.handleProcessingResult(sender.tab, request.data);
                         sendResponse({ success: true });
                         break;
-
                     case 'offscreen_vision_request':
                         this.handleOffscreenVisionRequest(request)
                             .then((result) => sendResponse(result))
                             .catch((error) => {
-                                Logger.error(
-                                    'BG',
-                                    'Offscreen vision request failed',
-                                    error
-                                );
-                                sendResponse({
-                                    success: false,
-                                    error: error?.message || 'Offscreen vision request failed'
-                                });
+                                Logger.error('BG', 'Offscreen vision request failed', error);
+                                sendResponse({ success: false, error: error?.message || 'Offscreen vision request failed' });
                             });
                         return true;
-
                     case 'offscreen_reasoning_request':
                         this.handleOffscreenReasoningRequest(request)
                             .then((result) => sendResponse(result))
                             .catch((error) => {
-                                Logger.error(
-                                    'BG',
-                                    'Offscreen reasoning request failed',
-                                    error
-                                );
-                                sendResponse({
-                                    success: false,
-                                    error: error?.message || 'Offscreen reasoning request failed'
-                                });
+                                Logger.error('BG', 'Offscreen reasoning request failed', error);
+                                sendResponse({ success: false, error: error?.message || 'Offscreen reasoning request failed' });
                             });
                         return true;
-
                     case 'offscreen_vision_ready':
                         sendResponse({ success: true });
                         break;
-
                     default:
-                        // Pass through to content script
                         sendResponse({ success: true });
                 }
             } catch (error) {
@@ -72,35 +52,27 @@ class ExtensionManager {
             }
         });
 
-        // Dedicated extension port for background -> offscreen communication.
-        // runtime.connect() does not connect to content scripts, so page scripts
-        // cannot accidentally answer these internal model requests.
         chrome.runtime.onConnect.addListener((port) => {
             if (port.name !== 'privacy-browser-offscreen-ai') {
                 return;
             }
-
             Logger.log('BG', 'Offscreen AI port connected');
         });
 
-        // Listen for tab activation
         chrome.tabs.onActivated.addListener((activeInfo) => {
             this.handleTabActivated(activeInfo.tabId);
         });
 
-        // Listen for tab removal
         chrome.tabs.onRemoved.addListener((tabId) => {
             this.activeTabs.delete(tabId);
         });
 
-        // Listen for tab URL change
         chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
             if (changeInfo.status === 'complete') {
                 // Could trigger processing on new pages
             }
         });
 
-        // Listen for extension installation
         chrome.runtime.onInstalled.addListener(() => {
             this.handleExtensionInstalled();
         });
@@ -128,7 +100,6 @@ class ExtensionManager {
 
     async handleOffscreenVisionRequest(request) {
         await this.ensureOffscreenDocument();
-
         return this.sendOffscreenRequest({
             type: 'run_offscreen_vision',
             width: request.width,
@@ -139,7 +110,6 @@ class ExtensionManager {
 
     async handleOffscreenReasoningRequest(request) {
         await this.ensureOffscreenDocument();
-
         return this.sendOffscreenRequest({
             type: 'run_offscreen_reasoning',
             goal: request.goal,
@@ -157,10 +127,7 @@ class ExtensionManager {
             };
 
             const timeout = setTimeout(() => {
-                finish({
-                    success: false,
-                    error: 'Offscreen local AI request timed out'
-                });
+                finish({ success: false, error: 'Offscreen local AI request timed out' });
             }, timeoutMs);
 
             const port = chrome.runtime.connect({
@@ -192,7 +159,6 @@ class ExtensionManager {
 
     handleContentReady(tab, frameId) {
         Logger.log('BG', `Content ready for tab ${tab.id}`, tab.url);
-        
         if (!this.activeTabs.has(tab.id)) {
             this.activeTabs.set(tab.id, {
                 url: tab.url,
@@ -205,7 +171,6 @@ class ExtensionManager {
 
     handleProcessingResult(tab, data) {
         Logger.log('BG', `Processing result from tab ${tab.id}`, data);
-        
         if (this.activeTabs.has(tab.id)) {
             const tabInfo = this.activeTabs.get(tab.id);
             tabInfo.lastResult = data;
@@ -219,11 +184,7 @@ class ExtensionManager {
 
     async handleExtensionInstalled() {
         Logger.log('BG', 'Extension installed');
-
-        // Initialize default configuration
         const defaultConfig = await Config.load();
-        
-        // Open configuration page
         chrome.tabs.create({
             url: 'popup.html?mode=settings'
         });
@@ -241,10 +202,8 @@ class ExtensionManager {
     }
 }
 
-// Initialize extension manager
 let extensionManager = null;
 
-// Ensure Logger is available
 if (typeof Logger === 'undefined') {
     var Logger = {
         log: (module, message, data) => {
@@ -255,12 +214,11 @@ if (typeof Logger === 'undefined') {
             console.error(`[${module}] ${message}`, error || '');
         },
         warn: (module, message) => {
-            console.warn(`[${module}] [${module}] ${message}`);
+            console.warn(`[${module}] ${message}`);
         }
     };
 }
 
-// Ensure Config is available
 if (typeof Config === 'undefined') {
     var Config = {
         DEFAULT: {
@@ -290,19 +248,17 @@ if (typeof Config === 'undefined') {
     };
 }
 
-// Service worker startup
 extensionManager = new ExtensionManager();
 
-// Set up periodic cleanup
 setInterval(() => {
     const now = Date.now();
-    const maxAge = 30 * 60 * 1000; // 30 minutes
+    const maxAge = 30 * 60 * 1000;
 
     for (const [tabId, info] of extensionManager.activeTabs) {
         if (now - info.lastUpdate > maxAge) {
             extensionManager.activeTabs.delete(tabId);
         }
     }
-}, 5 * 60 * 1000); // Check every 5 minutes
+}, 5 * 60 * 1000);
 
 Logger.log('BG', 'Background service worker started');
