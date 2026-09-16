@@ -6,8 +6,6 @@
  * No page observation is sent to the backend for this reasoning step.
  */
 
-import { pipeline } from './node_modules/@huggingface/transformers/dist/transformers.web.js';
-
 class LocalReasoningAgent {
     constructor() {
         this.modelId = 'onnx-community/Qwen2.5-0.5B-Instruct';
@@ -32,6 +30,10 @@ class LocalReasoningAgent {
 
     async loadModel() {
         try {
+            const { pipeline } = await import(
+                './node_modules/@huggingface/transformers/dist/transformers.web.js'
+            );
+
             const hasWebGPU =
                 typeof navigator !== 'undefined' &&
                 !!navigator.gpu;
@@ -230,13 +232,6 @@ class LocalReasoningAgent {
             };
         }
 
-        if (!['click', 'focus', 'type'].includes(type)) {
-            return {
-                type: 'finish',
-                reason: 'Local reasoning returned an invalid interaction action'
-            };
-        }
-
         const result = {
             type,
             element_id: elementId,
@@ -264,4 +259,6 @@ class LocalReasoningAgent {
     }
 }
 
+// Expose the class through the extension global object. The offscreen worker
+// uses a classic script, so it reads the constructor from window explicitly.
 window.LocalReasoningAgent = LocalReasoningAgent;
