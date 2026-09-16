@@ -5,12 +5,12 @@
  * without sending page pixels to the backend.
  *
  * Expected model:
- *   models/ui-element-detector.onnx
+ *   models/gui-detector/model.onnx
  *
- * The model should accept RGB image input and produce YOLO-style
- * object-detection output. The current MVP parser supports both
- * common raw YOLO outputs and already-NMS'd [x, y, w, h, score, class]
- * outputs.
+ * The model accepts RGB image input and produces YOLO-style
+ * object-detection output. The current parser handles the
+ * model's multiple [x, y, w, h, objectness, classScore]
+ * output heads and combines them before NMS.
  */
 
 class LocalOnnxVisionModel {
@@ -22,6 +22,7 @@ class LocalOnnxVisionModel {
         this.confidenceThreshold = 0.25;
         this.modelPath = 'models/gui-detector/model.onnx';
         this.initialized = false;
+        this.lastPreprocess = null;
     }
 
     async initialize() {
@@ -80,10 +81,12 @@ class LocalOnnxVisionModel {
             return [];
         }
 
-        const pixels = this.preprocess(canvas);
+        const preprocessed = this.preprocess(canvas);
+        this.lastPreprocess = preprocessed;
+
         const inputTensor = new window.ort.Tensor(
             'float32',
-            pixels,
+            preprocessed.tensor,
             [1, 3, this.inputHeight, this.inputWidth]
         );
 
@@ -91,7 +94,12 @@ class LocalOnnxVisionModel {
             [this.inputName]: inputTensor
         });
 
-        return this.parseOutputs(outputs, canvas.width, canvas.height);
+        return this.parseOutputs(
+            outputs,
+            canvas.width,
+            canvas.height,
+            preprocessed
+        );
     }
 
     preprocess(canvas) {
@@ -107,12 +115,45 @@ class LocalOnnxVisionModel {
             throw new Error('Could not create ONNX preprocessing canvas');
         }
 
-        ctx.drawImage(
-            canvas,
+        const scale = Math.min(
+            this.inputWidth / canvas.width,
+            this.inputHeight / canvas.height
+        );
+
+        const resizedWidth = Math.max(
+            1,
+            Math.round(canvas.width * scale)
+        );
+        const resizedHeight = Math.max(
+            1,
+            Math.round(canvas.height * scale)
+        );
+
+        const offsetX = Math.floor(
+            (this.inputWidth - resizedWidth) / 2
+        );
+        const offsetY = Math.floor(
+            (this.inputHeight - resizedHeight) / 2
+        );
+
+        ctx.fillStyle = '#114F3A';
+        ctx.fillRect(
             0,
             0,
             this.inputWidth,
             this.inputHeight
+        );
+
+        ctx.drawImage(
+            canvas,
+            0,
+            0,
+            canvas.width,
+            canvas.height,
+            offsetX,
+            offsetY,
+            resizedWidth,
+            resizedHeight
         );
 
         const imageData = ctx.getImageData(
@@ -142,122 +183,144 @@ class LocalOnnxVisionModel {
             }
         }
 
-        return tensor;
+        return {
+            tensor,
+            scale,
+            offsetX,
+            offsetY,
+            resizedWidth,
+            resizedHeight
+        };
     }
 
-    parseOutputs(outputs, canvasWidth, canvasHeight) {
-        const output = outputs[Object.keys(outputs)[0]];
-
-        if (!output || !output.data || !output.dims) {
-            return [];
-        }
-
-        const data = output.data;
-        const dims = output.dims;
-        let rows;
-        let columns;
-
-        if (dims.length === 3) {
-            rows = dims[1];
-            columns = dims[2];
-        } else if (dims.length === 2) {
-            rows = dims[0];
-            columns = dims[1];
-        } else {
-            Logger.warn(
-                'VISION',
-                `Unsupported ONNX output shape: ${JSON.stringify(dims)}`
-            );
-            return [];
-        }
-
-        if (columns < 6) {
-            Logger.warn(
-                'VISION',
-                `Unsupported ONNX detection output columns: ${columns}`
-            );
-            return [];
-        }
-
-        const scaleX = canvasWidth / this.inputWidth;
-        const scaleY = canvasHeight / this.inputHeight;
+    parseOutputs(
+        outputs,
+        canvasWidth,
+        canvasHeight,
+        preprocessInfo
+    ) {
         const detections = [];
 
-        for (let row = 0; row < rows; row++) {
-            const offset = row * columns;
-
-            const cx = Number(data[offset]);
-            const cy = Number(data[offset + 1]);
-            const width = Number(data[offset + 2]);
-            const height = Number(data[offset + 3]);
-
-            if (![cx, cy, width, height].every(Number.isFinite)) {
+        for (const output of Object.values(outputs)) {
+            if (!output || !output.data || !output.dims) {
                 continue;
             }
 
-            let confidence;
-            let classId = 0;
+            const data = output.data;
+            const dims = output.dims;
+            let rows;
+            let columns;
 
-            if (columns === 6) {
-                const objectness = Number(data[offset + 4]);
-                const classScore = Number(data[offset + 5]);
-                confidence =
-                    classScore >= 0 && classScore <= 1
-                        ? objectness * classScore
-                        : objectness;
+            if (dims.length === 3) {
+                rows = dims[1];
+                columns = dims[2];
+            } else if (dims.length === 2) {
+                rows = dims[0];
+                columns = dims[1];
             } else {
-                const objectness = Number(data[offset + 4]);
-                let bestClassScore = 0;
+                Logger.warn(
+                    'VISION',
+                    `Unsupported ONNX output shape: ${JSON.stringify(dims)}`
+                );
+                continue;
+            }
 
-                for (let c = 5; c < columns; c++) {
-                    const score = Number(data[offset + c]);
+            if (columns < 6) {
+                Logger.warn(
+                    'VISION',
+                    `Unsupported ONNX detection output columns: ${columns}`
+                );
+                continue;
+            }
 
-                    if (score > bestClassScore) {
-                        bestClassScore = score;
-                        classId = c - 5;
+            for (let row = 0; row < rows; row++) {
+                const offset = row * columns;
+
+                const cx = Number(data[offset]);
+                const cy = Number(data[offset + 1]);
+                const width = Number(data[offset + 2]);
+                const height = Number(data[offset + 3]);
+
+                if (![cx, cy, width, height].every(Number.isFinite)) {
+                    continue;
+                }
+
+                let confidence;
+                let classId = 0;
+
+                if (columns === 6) {
+                    const objectness = Number(data[offset + 4]);
+                    const classScore = Number(data[offset + 5]);
+
+                    if (!Number.isFinite(objectness) ||
+                        !Number.isFinite(classScore)) {
+                        continue;
                     }
+
+                    confidence = objectness * classScore;
+                } else {
+                    const objectness = Number(data[offset + 4]);
+                    let bestClassScore = 0;
+
+                    for (let c = 5; c < columns; c++) {
+                        const score = Number(data[offset + c]);
+
+                        if (score > bestClassScore) {
+                            bestClassScore = score;
+                            classId = c - 5;
+                        }
+                    }
+
+                    confidence = objectness * bestClassScore;
                 }
 
-                confidence = objectness * bestClassScore;
-            }
-
-            if (!Number.isFinite(confidence) ||
-                confidence < this.confidenceThreshold) {
-                continue;
-            }
-
-            const left = Math.max(
-                0,
-                (cx - width / 2) * scaleX
-            );
-            const top = Math.max(
-                0,
-                (cy - height / 2) * scaleY
-            );
-            const right = Math.min(
-                canvasWidth,
-                (cx + width / 2) * scaleX
-            );
-            const bottom = Math.min(
-                canvasHeight,
-                (cy + height / 2) * scaleY
-            );
-
-            if (right <= left || bottom <= top) {
-                continue;
-            }
-
-            detections.push({
-                classId,
-                className: 'interactive_element',
-                confidence,
-                bbox: {
-                    x: left,
-                    y: top,
-                    width: right - left,
-                    height: bottom - top
+                if (!Number.isFinite(confidence) ||
+                    confidence < this.confidenceThreshold) {
+                    continue;
                 }
-            });
+
+                const modelLeft = cx - width / 2;
+                const modelTop = cy - height / 2;
+                const modelRight = cx + width / 2;
+                const modelBottom = cy + height / 2;
+
+                const scale = preprocessInfo?.scale || 1;
+                const offsetX = preprocessInfo?.offsetX || 0;
+                const offsetY = preprocessInfo?.offsetY || 0;
+
+                const left = Math.max(
+                    0,
+                    (modelLeft - offsetX) / scale
+                );
+                const top = Math.max(
+                    0,
+                    (modelTop - offsetY) / scale
+                );
+                const right = Math.min(
+                    canvasWidth,
+                    (modelRight - offsetX) / scale
+                );
+                const bottom = Math.min(
+                    canvasHeight,
+                    (modelBottom - offsetY) / scale
+                );
+
+                if (right <= left || bottom <= top) {
+                    continue;
+                }
+
+                detections.push({
+                    classId,
+                    className: 'interactive_element',
+                    confidence,
+                    bbox: {
+                        x: left,
+                        y: top,
+                        width: right - left,
+                        height: bottom - top
+                    }
+                });
+            }
         }
 
         return this.nonMaximumSuppression(detections);
