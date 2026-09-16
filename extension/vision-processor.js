@@ -13,32 +13,19 @@ class VisionProcessor {
     }
 
     /**
-     * Initialize ONNX Runtime and load vision model
+     * Initialize the local vision processor.
+     * ONNX Runtime is owned by the extension offscreen document.
      */
     async initialize() {
         try {
-            if (!window.ort) {
-                Logger.error(
-                    'VISION',
-                    'ONNX Runtime not loaded'
-                );
-
-                return false;
-            }
-
             Logger.log(
                 'VISION',
                 'Initializing vision processor...'
             );
 
-            // --------------------------------------------------
-            // MVP:
-            // Use local feature extraction instead of ONNX.
-            //
-            // In production, a lightweight vision model such
-            // as DeiT-tiny / MobileViT / similar can be loaded.
-            // --------------------------------------------------
-
+            // ONNX Runtime runs in the extension offscreen document.
+            // The content script keeps the local feature-extraction pipeline
+            // and the LocalOnnxVisionModel bridge handles offscreen inference.
             this.initialized = true;
 
             Logger.log(
@@ -157,12 +144,6 @@ class VisionProcessor {
 
     /**
      * Render DOM snapshot using OffscreenCanvas
-     *
-     * This method fixes the original:
-     *
-     *     this.renderWithOffscreenCanvas is not a function
-     *
-     * error.
      */
     async renderWithOffscreenCanvas(width, height) {
 
@@ -296,12 +277,6 @@ class VisionProcessor {
 
             // --------------------------------------------------
             // Convert Blob back to normal HTMLCanvasElement
-            //
-            // The rest of the existing pipeline expects:
-            //
-            //     canvas.getContext('2d')
-            //
-            // So return a normal canvas.
             // --------------------------------------------------
 
             const finalCanvas =
