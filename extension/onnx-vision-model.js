@@ -24,11 +24,26 @@ class LocalOnnxVisionModel {
         this.initialized = false;
         this.lastPreprocess = null;
         this.loggedOutputDiagnostics = false;
+        this.isOffscreenContext =
+            typeof location !== 'undefined' &&
+            location.protocol === 'chrome-extension:';
     }
 
     async initialize() {
+        // Content scripts intentionally do not initialize ONNX Runtime.
+        // The model is loaded only inside the extension offscreen document,
+        // which is outside the target webpage's execution context/CSP.
+        if (!this.isOffscreenContext) {
+            this.initialized = true;
+            Logger.log(
+                'VISION',
+                'Local ONNX model will run through the extension offscreen document'
+            );
+            return true;
+        }
+
         if (!window.ort) {
-            throw new Error('ONNX Runtime Web is not available');
+            throw new Error('ONNX Runtime Web is not available in offscreen context');
         }
 
         const modelUrl = chrome.runtime.getURL(this.modelPath);
@@ -36,17 +51,13 @@ class LocalOnnxVisionModel {
             'node_modules/onnxruntime-web/dist/'
         );
 
-        // Content scripts run inside normal webpages. Threaded WASM
-        // requires cross-origin isolation that those pages do not
-        // reliably provide. Force single-threaded WASM so ONNX Runtime
-        // can initialize consistently on arbitrary websites.
         window.ort.env.wasm.numThreads = 1;
         window.ort.env.wasm.proxy = false;
         window.ort.env.wasm.wasmPaths = wasmPath;
 
         Logger.log(
             'VISION',
-            'Configuring ONNX Runtime Web for single-threaded WASM'
+            'Configuring ONNX Runtime Web for single-threaded WASM in offscreen document'
         );
 
         this.session = await window.ort.InferenceSession.create(
@@ -82,14 +93,22 @@ class LocalOnnxVisionModel {
 
         Logger.log(
             'VISION',
-            `Local ONNX model loaded: ${this.modelPath} (${this.inputWidth}x${this.inputHeight})`
+            `Local ONNX model loaded in offscreen context: ${this.modelPath} (${this.inputWidth}x${this.inputHeight})`
         );
 
         return true;
     }
 
     async infer(canvas) {
-        if (!this.initialized || !this.session || !this.inputName) {
+        if (!this.initialized) {
+            return [];
+        }
+
+        if (!this.isOffscreenContext) {
+            return this.inferThroughOffscreenDocument(canvas);
+        }
+
+        if (!this.session || !this.inputName) {
             return [];
         }
 
@@ -112,6 +131,40 @@ class LocalOnnxVisionModel {
             canvas.height,
             preprocessed
         );
+    }
+
+    async inferThroughOffscreenDocument(canvas) {
+        const ctx = canvas.getContext('2d', {
+            willReadFrequently: true
+        });
+
+        if (!ctx) {
+            throw new Error('Could not read canvas pixels for offscreen inference');
+        }
+
+        const imageData = ctx.getImageData(
+            0,
+            0,
+            canvas.width,
+            canvas.height
+        );
+
+        const response = await chrome.runtime.sendMessage({
+            type: 'offscreen_vision_request',
+            width: canvas.width,
+            height: canvas.height,
+            pixels: Array.from(imageData.data)
+        });
+
+        if (!response?.success) {
+            throw new Error(
+                response?.error || 'Offscreen vision inference failed'
+            );
+        }
+
+        return Array.isArray(response.detections)
+            ? response.detections
+            : [];
     }
 
     preprocess(canvas) {
@@ -431,10 +484,6 @@ class LocalOnnxVisionModel {
  */
 (() => {
     if (typeof VisionProcessor === 'undefined') {
-        Logger.error(
-            'VISION',
-            'VisionProcessor is not available for ONNX integration'
-        );
         return;
     }
 
