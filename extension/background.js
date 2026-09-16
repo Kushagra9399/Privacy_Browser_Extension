@@ -26,6 +26,26 @@ class ExtensionManager {
                         sendResponse({ success: true });
                         break;
 
+                    case 'offscreen_vision_request':
+                        this.handleOffscreenVisionRequest(request)
+                            .then((result) => sendResponse(result))
+                            .catch((error) => {
+                                Logger.error(
+                                    'BG',
+                                    'Offscreen vision request failed',
+                                    error
+                                );
+                                sendResponse({
+                                    success: false,
+                                    error: error?.message || 'Offscreen vision request failed'
+                                });
+                            });
+                        return true;
+
+                    case 'offscreen_vision_ready':
+                        sendResponse({ success: true });
+                        break;
+
                     default:
                         // Pass through to content script
                         sendResponse({ success: true });
@@ -56,6 +76,64 @@ class ExtensionManager {
         // Listen for extension installation
         chrome.runtime.onInstalled.addListener(() => {
             this.handleExtensionInstalled();
+        });
+    }
+
+    async ensureOffscreenDocument() {
+        const offscreenUrl = chrome.runtime.getURL('offscreen.html');
+        const existingContexts = await chrome.runtime.getContexts({
+            contextTypes: ['OFFSCREEN_DOCUMENT'],
+            documentUrls: [offscreenUrl]
+        });
+
+        if (existingContexts.length > 0) {
+            return;
+        }
+
+        await chrome.offscreen.createDocument({
+            url: 'offscreen.html',
+            reasons: ['BLOBS'],
+            justification: 'Run local ONNX vision inference outside webpage execution contexts.'
+        });
+
+        Logger.log('BG', 'Offscreen vision document created');
+    }
+
+    async handleOffscreenVisionRequest(request) {
+        await this.ensureOffscreenDocument();
+
+        return new Promise((resolve) => {
+            const timeout = setTimeout(() => {
+                resolve({
+                    success: false,
+                    error: 'Offscreen vision inference timed out'
+                });
+            }, 15000);
+
+            chrome.runtime.sendMessage(
+                {
+                    type: 'run_offscreen_vision',
+                    width: request.width,
+                    height: request.height,
+                    pixels: request.pixels
+                },
+                (response) => {
+                    clearTimeout(timeout);
+
+                    if (chrome.runtime.lastError) {
+                        resolve({
+                            success: false,
+                            error: chrome.runtime.lastError.message
+                        });
+                        return;
+                    }
+
+                    resolve(response || {
+                        success: false,
+                        error: 'No response from offscreen vision document'
+                    });
+                }
+            );
         });
     }
 
