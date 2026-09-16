@@ -23,6 +23,7 @@ class LocalOnnxVisionModel {
         this.modelPath = 'models/gui-detector/model.onnx';
         this.initialized = false;
         this.lastPreprocess = null;
+        this.loggedOutputDiagnostics = false;
     }
 
     async initialize() {
@@ -201,7 +202,7 @@ class LocalOnnxVisionModel {
     ) {
         const detections = [];
 
-        for (const output of Object.values(outputs)) {
+        for (const [outputName, output] of Object.entries(outputs)) {
             if (!output || !output.data || !output.dims) {
                 continue;
             }
@@ -223,6 +224,46 @@ class LocalOnnxVisionModel {
                     `Unsupported ONNX output shape: ${JSON.stringify(dims)}`
                 );
                 continue;
+            }
+
+            if (!this.loggedOutputDiagnostics) {
+                let minValue = Infinity;
+                let maxValue = -Infinity;
+
+                for (let i = 0; i < data.length; i++) {
+                    const value = Number(data[i]);
+
+                    if (!Number.isFinite(value)) {
+                        continue;
+                    }
+
+                    if (value < minValue) {
+                        minValue = value;
+                    }
+
+                    if (value > maxValue) {
+                        maxValue = value;
+                    }
+                }
+
+                const sampleRows = [];
+                const sampleRowCount = Math.min(rows, 5);
+
+                for (let row = 0; row < sampleRowCount; row++) {
+                    const offset = row * columns;
+                    const rowValues = [];
+
+                    for (let column = 0; column < columns; column++) {
+                        rowValues.push(Number(data[offset + column]));
+                    }
+
+                    sampleRows.push(rowValues);
+                }
+
+                Logger.log(
+                    'VISION',
+                    `ONNX output ${outputName}: shape=${JSON.stringify(dims)}, min=${minValue}, max=${maxValue}, sample=${JSON.stringify(sampleRows)}`
+                );
             }
 
             if (columns < 6) {
@@ -322,6 +363,8 @@ class LocalOnnxVisionModel {
                 });
             }
         }
+
+        this.loggedOutputDiagnostics = true;
 
         return this.nonMaximumSuppression(detections);
     }
