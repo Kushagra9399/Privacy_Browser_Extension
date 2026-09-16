@@ -43,6 +43,7 @@
     {
       "resources": [
         "node_modules/onnxruntime-web/dist/*.js",
+        "node_modules/onnxruntime-web/dist/*.mjs",
         "node_modules/onnxruntime-web/dist/*.wasm",
         "models/*"
       ],
