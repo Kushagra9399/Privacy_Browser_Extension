@@ -20,7 +20,7 @@ class LocalOnnxVisionModel {
         this.inputWidth = 640;
         this.inputHeight = 640;
         this.confidenceThreshold = 0.25;
-        this.modelPath = 'models/ui-element-detector.onnx';
+        this.modelPath = 'models/gui-detector/model.onnx';
         this.initialized = false;
     }
 
