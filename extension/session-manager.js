@@ -372,8 +372,20 @@ class ClientSessionManager {
                 const data = await response.json();
                 
                 if (!data.success) {
-                    Logger.warn('SESSION', `Server error: ${data.error_message}`);
-                    return null;
+                    const errorMessage =
+                        data.error_message ||
+                        'Server failed to produce an action';
+
+                    Logger.error(
+                        'SESSION',
+                        `Agent session failed: ${errorMessage}`
+                    );
+
+                    this.isRunning = false;
+
+                    throw new Error(
+                        `Agent session failed: ${errorMessage}`
+                    );
                 }
                 
                 if (data.action) {
