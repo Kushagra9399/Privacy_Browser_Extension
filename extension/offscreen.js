@@ -33,11 +33,13 @@ async function getReasoningAgent() {
 
     if (!reasoningInitialization) {
         reasoningInitialization = (async () => {
-            if (typeof LocalReasoningAgent === 'undefined') {
+            const ReasoningAgent = window.LocalReasoningAgent;
+
+            if (typeof ReasoningAgent !== 'function') {
                 throw new Error('Local reasoning agent is not available');
             }
 
-            const agent = new LocalReasoningAgent();
+            const agent = new ReasoningAgent();
             await agent.initialize();
             reasoningAgent = agent;
             return agent;
