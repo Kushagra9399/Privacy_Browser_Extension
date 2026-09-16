@@ -42,6 +42,22 @@ class ExtensionManager {
                             });
                         return true;
 
+                    case 'offscreen_reasoning_request':
+                        this.handleOffscreenReasoningRequest(request)
+                            .then((result) => sendResponse(result))
+                            .catch((error) => {
+                                Logger.error(
+                                    'BG',
+                                    'Offscreen reasoning request failed',
+                                    error
+                                );
+                                sendResponse({
+                                    success: false,
+                                    error: error?.message || 'Offscreen reasoning request failed'
+                                });
+                            });
+                        return true;
+
                     case 'offscreen_vision_ready':
                         sendResponse({ success: true });
                         break;
@@ -93,10 +109,10 @@ class ExtensionManager {
         await chrome.offscreen.createDocument({
             url: 'offscreen.html',
             reasons: ['BLOBS'],
-            justification: 'Run local ONNX vision inference outside webpage execution contexts.'
+            justification: 'Run local ONNX vision and language inference outside webpage execution contexts.'
         });
 
-        Logger.log('BG', 'Offscreen vision document created');
+        Logger.log('BG', 'Offscreen local AI document created');
     }
 
     async handleOffscreenVisionRequest(request) {
@@ -131,6 +147,43 @@ class ExtensionManager {
                     resolve(response || {
                         success: false,
                         error: 'No response from offscreen vision document'
+                    });
+                }
+            );
+        });
+    }
+
+    async handleOffscreenReasoningRequest(request) {
+        await this.ensureOffscreenDocument();
+
+        return new Promise((resolve) => {
+            const timeout = setTimeout(() => {
+                resolve({
+                    success: false,
+                    error: 'Offscreen local reasoning timed out'
+                });
+            }, 30000);
+
+            chrome.runtime.sendMessage(
+                {
+                    type: 'run_offscreen_reasoning',
+                    goal: request.goal,
+                    observation: request.observation
+                },
+                (response) => {
+                    clearTimeout(timeout);
+
+                    if (chrome.runtime.lastError) {
+                        resolve({
+                            success: false,
+                            error: chrome.runtime.lastError.message
+                        });
+                        return;
+                    }
+
+                    resolve(response || {
+                        success: false,
+                        error: 'No response from offscreen local reasoning model'
                     });
                 }
             );
