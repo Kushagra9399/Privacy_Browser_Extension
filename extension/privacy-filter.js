@@ -28,7 +28,7 @@ class PrivacyFilter {
         // Regex patterns for PII detection
         this.patterns = {
             email: /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g,
-            phone: /(\+?1[-.\s]?)?\(?[0-9]{3}\)?[-.\s]?[0-9]{3}[-.\s]?[0-9]{4}/g,
+            phone: /(?:\+?\d{1,3}[\s.-]?)?(?:\d{3}[\s.-]?\d{3}[\s.-]?\d{4}|\d{5}[\s.-]?\d{5}|\d{10})/g,
             ssn: /\d{3}-\d{2}-\d{4}/g,
             creditCard: /\b(?:\d{4}[-\s]?){3}\d{4}\b/g,
             zipCode: /\b\d{5}(?:-\d{4})?\b/g,
@@ -53,9 +53,15 @@ class PrivacyFilter {
      */
     analyzePage() {
         const redactions = [];
-        
+
+        // Each analysis represents one page state. Do not carry counts
+        // from previous observations into the current redaction mask.
+        this.resetStats();
+
         // Check input elements
         document.querySelectorAll('input, textarea, select').forEach((el, idx) => {
+            this.detectionStats.totalElements++;
+
             const sensitiveType = this.classifyInputElement(el);
             if (sensitiveType) {
                 const rect = el.getBoundingClientRect();
@@ -273,7 +279,7 @@ class PrivacyFilter {
         ctx.save();
 
         redactions.forEach(redaction => {
-            const { bbox, type, priority } = redaction;
+            const { bbox, type } = redaction;
 
             // Expand bbox slightly for safety
             const padding = 2;
@@ -285,6 +291,10 @@ class PrivacyFilter {
             // Ensure coordinates are within canvas
             const clipped = this.clipToCanvas(canvas, x, y, width, height);
 
+            if (clipped.width <= 0 || clipped.height <= 0) {
+                return;
+            }
+
             if (this.config.redactionMode === 'blur') {
                 this.applyBlur(ctx, clipped.x, clipped.y, clipped.width, clipped.height);
             } else if (this.config.redactionMode === 'black') {
@@ -295,7 +305,7 @@ class PrivacyFilter {
         });
 
         ctx.restore();
-        this.detectionStats.redacted += redactions.length;
+        this.detectionStats.redacted = redactions.length;
         return canvas;
     }
 
@@ -303,21 +313,55 @@ class PrivacyFilter {
      * Clip coordinates to canvas bounds
      */
     clipToCanvas(canvas, x, y, width, height) {
+        const left = Math.max(0, x);
+        const top = Math.max(0, y);
+        const right = Math.min(canvas.width, x + width);
+        const bottom = Math.min(canvas.height, y + height);
+
         return {
-            x: Math.max(0, Math.min(x, canvas.width)),
-            y: Math.max(0, Math.min(y, canvas.height)),
-            width: Math.min(width, canvas.width - x),
-            height: Math.min(height, canvas.height - y)
+            x: left,
+            y: top,
+            width: Math.max(0, right - left),
+            height: Math.max(0, bottom - top)
         };
     }
 
     /**
-     * Apply blur effect
+     * Apply blur effect to the existing pixels in the redaction area
      */
     applyBlur(ctx, x, y, width, height) {
-        ctx.filter = `blur(${this.config.blurRadius}px)`;
-        ctx.fillRect(x, y, width, height);
-        ctx.filter = 'none';
+        if (width <= 0 || height <= 0) {
+            return;
+        }
+
+        const imageData = ctx.getImageData(
+            x,
+            y,
+            width,
+            height
+        );
+
+        const blurCanvas = document.createElement('canvas');
+        blurCanvas.width = width;
+        blurCanvas.height = height;
+
+        const blurCtx = blurCanvas.getContext('2d');
+        if (!blurCtx) {
+            return;
+        }
+
+        blurCtx.putImageData(imageData, 0, 0);
+        blurCtx.filter = `blur(${this.config.blurRadius}px)`;
+        blurCtx.drawImage(blurCanvas, 0, 0);
+        blurCtx.filter = 'none';
+
+        ctx.drawImage(
+            blurCanvas,
+            x,
+            y,
+            width,
+            height
+        );
     }
 
     /**
@@ -356,7 +400,7 @@ class PrivacyFilter {
                 reason: r.reason,
                 priority: r.priority
             })),
-            stats: this.detectionStats,
+            stats: { ...this.detectionStats },
             timestamp: Date.now()
         };
     }
