@@ -27,8 +27,9 @@
       "js": [
         "utils.js",
         "privacy-filter.js",
-        "lib/ort/ort.min.js",
+        "node_modules/onnxruntime-web/dist/ort.min.js",
         "vision-processor.js",
+        "onnx-vision-model.js",
         "command-executor.js",
         "session-manager.js",
         "agent-loop.js",
@@ -41,9 +42,9 @@
   "web_accessible_resources": [
     {
       "resources": [
-      "node_modules/onnxruntime-web/dist/*.js",
-      "node_modules/onnxruntime-web/dist/*.wasm",
-      "models/*"
+        "node_modules/onnxruntime-web/dist/*.js",
+        "node_modules/onnxruntime-web/dist/*.wasm",
+        "models/*"
       ],
       "matches": ["<all_urls>"]
     }
