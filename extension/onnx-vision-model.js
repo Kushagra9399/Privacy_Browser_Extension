@@ -36,7 +36,18 @@ class LocalOnnxVisionModel {
             'node_modules/onnxruntime-web/dist/'
         );
 
+        // Content scripts run inside normal webpages. Threaded WASM
+        // requires cross-origin isolation that those pages do not
+        // reliably provide. Force single-threaded WASM so ONNX Runtime
+        // can initialize consistently on arbitrary websites.
+        window.ort.env.wasm.numThreads = 1;
+        window.ort.env.wasm.proxy = false;
         window.ort.env.wasm.wasmPaths = wasmPath;
+
+        Logger.log(
+            'VISION',
+            'Configuring ONNX Runtime Web for single-threaded WASM'
+        );
 
         this.session = await window.ort.InferenceSession.create(
             modelUrl,
@@ -405,7 +416,6 @@ class LocalOnnxVisionModel {
         const intersectionHeight = Math.max(0, bottom - top);
         const intersection =
             intersectionWidth * intersectionHeight;
-
         const areaA = a.width * a.height;
         const areaB = b.width * b.height;
         const union = areaA + areaB - intersection;
