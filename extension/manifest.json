@@ -25,11 +25,11 @@
     {
       "matches": ["<all_urls>"],
       "js": [
-        "onnx-vision-model.js",
         "utils.js",
         "privacy-filter.js",
         "node_modules/onnxruntime-web/dist/ort.min.js",
         "vision-processor.js",
+        "onnx-vision-model.js",
         "command-executor.js",
         "session-manager.js",
         "agent-loop.js",
