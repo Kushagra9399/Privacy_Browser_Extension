@@ -30,9 +30,13 @@ class LocalReasoningAgent {
 
     async loadModel() {
         try {
-            const { pipeline } = await import(
-                './node_modules/@huggingface/transformers/dist/transformers.web.js'
-            );
+            const pipeline = window.TransformersPipeline;
+
+            if (typeof pipeline !== 'function') {
+                throw new Error(
+                    'Transformers.js runtime is not loaded; check transformers-loader.js and node_modules/@huggingface/transformers'
+                );
+            }
 
             const hasWebGPU =
                 typeof navigator !== 'undefined' &&
@@ -259,6 +263,4 @@ class LocalReasoningAgent {
     }
 }
 
-// Expose the class through the extension global object. The offscreen worker
-// uses a classic script, so it reads the constructor from window explicitly.
 window.LocalReasoningAgent = LocalReasoningAgent;
