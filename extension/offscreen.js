@@ -47,97 +47,124 @@ async function getReasoningAgent() {
     return reasoningInitialization;
 }
 
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+async function handleOffscreenRequest(request) {
     if (request.type === 'run_offscreen_vision') {
-        (async () => {
-            try {
-                const model = await getVisionModel();
-                const width = Number(request.width);
-                const height = Number(request.height);
+        const model = await getVisionModel();
+        const width = Number(request.width);
+        const height = Number(request.height);
 
-                if (!Number.isFinite(width) || width <= 0 ||
-                    !Number.isFinite(height) || height <= 0) {
-                    throw new Error('Invalid offscreen vision dimensions');
-                }
+        if (!Number.isFinite(width) || width <= 0 ||
+            !Number.isFinite(height) || height <= 0) {
+            throw new Error('Invalid offscreen vision dimensions');
+        }
 
-                if (!request.pixels || request.pixels.length !== width * height * 4) {
-                    throw new Error('Invalid offscreen vision pixel buffer');
-                }
+        if (!request.pixels || request.pixels.length !== width * height * 4) {
+            throw new Error('Invalid offscreen vision pixel buffer');
+        }
 
-                const canvas = document.createElement('canvas');
-                canvas.width = width;
-                canvas.height = height;
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
 
-                const ctx = canvas.getContext('2d', {
-                    willReadFrequently: true
-                });
+        const ctx = canvas.getContext('2d', {
+            willReadFrequently: true
+        });
 
-                if (!ctx) {
-                    throw new Error('Could not create offscreen canvas context');
-                }
+        if (!ctx) {
+            throw new Error('Could not create offscreen canvas context');
+        }
 
-                const imageData = new ImageData(
-                    new Uint8ClampedArray(request.pixels),
-                    width,
-                    height
-                );
+        const imageData = new ImageData(
+            new Uint8ClampedArray(request.pixels),
+            width,
+            height
+        );
 
-                ctx.putImageData(imageData, 0, 0);
+        ctx.putImageData(imageData, 0, 0);
 
-                const detections = await model.infer(canvas);
+        const detections = await model.infer(canvas);
 
-                sendResponse({
-                    success: true,
-                    detections
-                });
-            } catch (error) {
-                Logger.error(
-                    'VISION',
-                    'Offscreen ONNX inference failed',
-                    error
-                );
-
-                sendResponse({
-                    success: false,
-                    error: error?.message || 'Offscreen ONNX inference failed'
-                });
-            }
-        })();
-
-        return true;
+        return {
+            success: true,
+            detections
+        };
     }
 
     if (request.type === 'run_offscreen_reasoning') {
-        (async () => {
-            try {
-                const agent = await getReasoningAgent();
-                const action = await agent.reason(
-                    request.goal,
-                    request.observation
-                );
+        const agent = await getReasoningAgent();
+        const action = await agent.reason(
+            request.goal,
+            request.observation
+        );
 
-                sendResponse({
-                    success: true,
-                    action
-                });
-            } catch (error) {
+        return {
+            success: true,
+            action
+        };
+    }
+
+    return {
+        success: false,
+        error: `Unsupported offscreen request: ${request.type}`
+    };
+}
+
+// Dedicated port: background service worker -> offscreen document.
+// runtime.connect() does not connect to content scripts, preventing page-side
+// listeners from accidentally answering internal local-AI requests.
+chrome.runtime.onConnect.addListener((port) => {
+    if (port.name !== 'privacy-browser-offscreen-ai') {
+        return;
+    }
+
+    Logger.log('LOCAL_AGENT', 'Offscreen AI port connected');
+
+    port.onMessage.addListener((request) => {
+        handleOffscreenRequest(request)
+            .then((response) => port.postMessage(response))
+            .catch((error) => {
+                const module = request.type === 'run_offscreen_vision'
+                    ? 'VISION'
+                    : 'LOCAL_AGENT';
+
                 Logger.error(
-                    'LOCAL_AGENT',
-                    'Offscreen local reasoning failed',
+                    module,
+                    'Offscreen local AI request failed',
                     error
                 );
 
-                sendResponse({
+                port.postMessage({
                     success: false,
-                    error: error?.message || 'Offscreen local reasoning failed'
+                    error: error?.message || 'Offscreen local AI request failed'
                 });
-            }
-        })();
+            });
+    });
+});
 
-        return true;
+// Keep the existing one-time message API for direct offscreen requests.
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    if (!request.type?.startsWith('run_offscreen_')) {
+        return false;
     }
 
-    return false;
+    handleOffscreenRequest(request)
+        .then(sendResponse)
+        .catch((error) => {
+            Logger.error(
+                request.type === 'run_offscreen_vision'
+                    ? 'VISION'
+                    : 'LOCAL_AGENT',
+                'Offscreen local AI request failed',
+                error
+            );
+
+            sendResponse({
+                success: false,
+                error: error?.message || 'Offscreen local AI request failed'
+            });
+        });
+
+    return true;
 });
 
 Logger.log('LOCAL_AGENT', 'Offscreen local AI document loaded');
