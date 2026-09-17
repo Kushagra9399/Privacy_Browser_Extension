@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Privacy Browser Agent",
   "version": "1.0.0",
-  "description": "Privacy-preserving browser agent for on-device visual perception with local vision processing.",
+  "description": "Privacy-preserving browser agent for on-device visual perception and local LLM reasoning.",
   "permissions": [
     "activeTab",
     "scripting",
@@ -48,6 +48,7 @@
         "node_modules/onnxruntime-web/dist/*.js",
         "node_modules/onnxruntime-web/dist/*.mjs",
         "node_modules/onnxruntime-web/dist/*.wasm",
+        "node_modules/@mlc-ai/web-llm/lib/**/*",
         "models/*"
       ],
       "matches": ["<all_urls>"]
