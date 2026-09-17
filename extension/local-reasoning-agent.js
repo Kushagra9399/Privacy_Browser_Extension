@@ -1,23 +1,14 @@
-/**
- * Local Reasoning Agent
- *
- * Runs a small instruction-tuned language model inside the extension's
- * offscreen document. Page state is supplied as sanitized structural data.
- * No page observation is sent to the backend for this reasoning step.
- */
-
 class LocalReasoningAgent {
     constructor() {
-        this.modelId = 'onnx-community/Qwen2.5-0.5B-Instruct';
-        this.generator = null;
+        this.modelId = 'Qwen2-0.5B-Instruct-q4f16_1-MLC';
+        this.engine = null;
         this.initialization = null;
         this.initialized = false;
-        this.device = null;
         this.maxNewTokens = 120;
     }
 
     async initialize() {
-        if (this.initialized && this.generator) {
+        if (this.initialized && this.engine) {
             return true;
         }
 
@@ -30,58 +21,50 @@ class LocalReasoningAgent {
 
     async loadModel() {
         try {
-            const pipeline = window.TransformersPipeline;
+            const CreateMLCEngine = window.CreateMLCEngine;
 
-            if (typeof pipeline !== 'function') {
+            if (typeof CreateMLCEngine !== 'function') {
                 throw new Error(
-                    'Transformers.js runtime is not loaded; check transformers-loader.js and node_modules/@huggingface/transformers'
+                    'WebLLM runtime is not loaded; check transformers-loader.js and @mlc-ai/web-llm'
                 );
             }
 
-            const hasWebGPU =
-                typeof navigator !== 'undefined' &&
-                !!navigator.gpu;
-
-            this.device = hasWebGPU ? 'webgpu' : 'wasm';
+            if (typeof navigator !== 'undefined' && !navigator.gpu) {
+                throw new Error(
+                    'WebGPU is not available in this extension context. WebLLM requires WebGPU for this local reasoning model.'
+                );
+            }
 
             Logger.log(
                 'LOCAL_AGENT',
-                `Loading local reasoning model ${this.modelId} using ${this.device}`
+                `Loading local WebLLM reasoning model ${this.modelId}`
             );
 
-            this.generator = await pipeline(
-                'text-generation',
-                this.modelId,
-                {
-                    device: this.device,
-                    dtype: 'q4',
-                    progress_callback: (progress) => {
-                        if (progress?.status === 'progress') {
-                            Logger.log(
-                                'LOCAL_AGENT',
-                                `Reasoning model download: ${Math.round(progress.progress || 0)}%`
-                            );
-                        }
-                    }
+            this.engine = await CreateMLCEngine(this.modelId, {
+                initProgressCallback: (progress) => {
+                    Logger.log(
+                        'LOCAL_AGENT',
+                        `WebLLM model loading: ${progress?.text || progress?.progress || ''}`
+                    );
                 }
-            );
+            });
 
             this.initialized = true;
 
             Logger.log(
                 'LOCAL_AGENT',
-                `Local reasoning model ready: ${this.modelId}`
+                `Local WebLLM model ready: ${this.modelId}`
             );
 
             return true;
         } catch (error) {
             this.initialization = null;
-            this.generator = null;
+            this.engine = null;
             this.initialized = false;
 
             Logger.error(
                 'LOCAL_AGENT',
-                'Failed to initialize local reasoning model',
+                'Failed to initialize local WebLLM reasoning model',
                 error
             );
 
@@ -99,16 +82,16 @@ class LocalReasoningAgent {
                 role: 'system',
                 content: [
                     'You are the local reasoning engine for a privacy-preserving browser agent.',
-                    'Your job is to choose exactly one next browser action from the current page state.',
+                    'Choose exactly one next browser action from the supplied safe page state.',
                     'Use only the supplied goal and page elements.',
                     'Never invent an element_id.',
                     'Prefer an element whose visible text, aria label, placeholder, or role matches the goal.',
-                    'Do not use sensitive elements.',
+                    'Never select a sensitive element.',
                     'Return ONLY valid JSON with this schema:',
                     '{"type":"click|focus|type|scroll|finish","element_id":"...","text":"...","direction":"up|down","amount":500,"reason":"..."}',
                     'Only include fields relevant to the selected action.',
                     'If the goal is already satisfied, return type finish.',
-                    'If no safe next action can be determined from the supplied page state, return type finish.'
+                    'If no safe next action can be determined, return type finish.'
                 ].join(' ')
             },
             {
@@ -120,16 +103,15 @@ class LocalReasoningAgent {
             }
         ];
 
-        const output = await this.generator(messages, {
-            max_new_tokens: this.maxNewTokens,
-            do_sample: false,
-            temperature: 0
+        const response = await this.engine.chat.completions.create({
+            messages,
+            temperature: 0,
+            max_tokens: this.maxNewTokens
         });
 
-        const generated = output?.[0]?.generated_text;
-        const text = Array.isArray(generated)
-            ? generated.at(-1)?.content || ''
-            : String(generated || '');
+        const text = String(
+            response?.choices?.[0]?.message?.content || ''
+        ).trim();
 
         return this.parseAction(text, safeObservation.elements);
     }
@@ -172,7 +154,7 @@ class LocalReasoningAgent {
         if (!jsonMatch) {
             return {
                 type: 'finish',
-                reason: 'Local reasoning model did not return valid JSON'
+                reason: 'Local WebLLM did not return valid JSON'
             };
         }
 
@@ -182,7 +164,7 @@ class LocalReasoningAgent {
         } catch (error) {
             return {
                 type: 'finish',
-                reason: 'Local reasoning model returned malformed JSON'
+                reason: 'Local WebLLM returned malformed JSON'
             };
         }
 
@@ -198,7 +180,7 @@ class LocalReasoningAgent {
         if (!allowedTypes.has(type)) {
             return {
                 type: 'finish',
-                reason: `Local reasoning returned unsupported action type: ${type}`
+                reason: `Local WebLLM returned unsupported action type: ${type}`
             };
         }
 
@@ -214,7 +196,7 @@ class LocalReasoningAgent {
             if (!['up', 'down'].includes(direction)) {
                 return {
                     type: 'finish',
-                    reason: 'Local reasoning returned an invalid scroll direction'
+                    reason: 'Local WebLLM returned an invalid scroll direction'
                 };
             }
 
@@ -232,14 +214,14 @@ class LocalReasoningAgent {
         if (!element) {
             return {
                 type: 'finish',
-                reason: 'Local reasoning selected an element that is not present in the safe observation'
+                reason: 'Local WebLLM selected an element that is not present in the safe observation'
             };
         }
 
         const result = {
             type,
             element_id: elementId,
-            reason: String(action.reason || 'Action selected by local reasoning')
+            reason: String(action.reason || 'Action selected by local WebLLM')
         };
 
         if (type === 'type') {
@@ -254,7 +236,7 @@ class LocalReasoningAgent {
             if (!result.text) {
                 return {
                     type: 'finish',
-                    reason: 'Local reasoning returned an empty text action'
+                    reason: 'Local WebLLM returned an empty text action'
                 };
             }
         }
