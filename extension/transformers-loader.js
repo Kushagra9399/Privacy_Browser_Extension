@@ -1,10 +1,5 @@
-/**
- * Loads Transformers.js as an extension-owned ES module and exposes only
- * the pipeline function needed by the local reasoning agent.
- */
+import { CreateMLCEngine } from './node_modules/@mlc-ai/web-llm/lib/index.js';
 
-import { pipeline } from './node_modules/@huggingface/transformers/dist/transformers.web.js';
+window.CreateMLCEngine = CreateMLCEngine;
 
-window.TransformersPipeline = pipeline;
-
-Logger.log('LOCAL_AGENT', 'Transformers.js runtime loaded');
+Logger.log('LOCAL_AGENT', 'WebLLM runtime loaded');
