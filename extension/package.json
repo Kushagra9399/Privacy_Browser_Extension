@@ -1,6 +1,6 @@
 {
   "dependencies": {
-    "onnxruntime-web": "^1.29.0",
-    "@huggingface/transformers": "^4.2.0"
+    "@mlc-ai/web-llm": "^0.2.85",
+    "onnxruntime-web": "^1.29.0"
   }
 }
