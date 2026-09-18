@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Privacy Browser Agent",
   "version": "1.0.0",
-  "description": "Privacy-preserving browser agent for on-device visual perception and local LLM reasoning.",
+  "description": "Privacy-preserving browser agent with client-side visual perception and local PII redaction.",
   "permissions": [
     "activeTab",
     "scripting",
@@ -26,7 +26,9 @@
   },
   "content_scripts": [
     {
-      "matches": ["<all_urls>"],
+      "matches": [
+        "<all_urls>"
+      ],
       "js": [
         "utils.js",
         "privacy-filter.js",
@@ -35,10 +37,11 @@
         "command-executor.js",
         "session-manager.js",
         "agent-loop.js",
-        "local-agent-loop.js",
         "content.js"
       ],
-      "css": ["styles.css"],
+      "css": [
+        "styles.css"
+      ],
       "run_at": "document_start"
     }
   ],
@@ -48,10 +51,11 @@
         "node_modules/onnxruntime-web/dist/*.js",
         "node_modules/onnxruntime-web/dist/*.mjs",
         "node_modules/onnxruntime-web/dist/*.wasm",
-        "node_modules/@mlc-ai/web-llm/lib/**/*",
         "models/*"
       ],
-      "matches": ["<all_urls>"]
+      "matches": [
+        "<all_urls>"
+      ]
     }
   ],
   "icons": {
