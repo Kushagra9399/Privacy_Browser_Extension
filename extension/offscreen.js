@@ -1,14 +1,11 @@
 /**
- * Offscreen local AI worker.
+ * Offscreen local vision worker.
  * Runs ONNX Runtime and Transformers.js under the extension origin instead
  * of the webpage origin.
  */
 
 let visionModel = null;
 let visionInitialization = null;
-let reasoningAgent = null;
-let reasoningInitialization = null;
-
 async function getVisionModel() {
     if (visionModel?.initialized) {
         return visionModel;
@@ -24,29 +21,6 @@ async function getVisionModel() {
     }
 
     return visionInitialization;
-}
-
-async function getReasoningAgent() {
-    if (reasoningAgent?.initialized) {
-        return reasoningAgent;
-    }
-
-    if (!reasoningInitialization) {
-        reasoningInitialization = (async () => {
-            const ReasoningAgent = window.LocalReasoningAgent;
-
-            if (typeof ReasoningAgent !== 'function') {
-                throw new Error('Local reasoning agent is not available');
-            }
-
-            const agent = new ReasoningAgent();
-            await agent.initialize();
-            reasoningAgent = agent;
-            return agent;
-        })();
-    }
-
-    return reasoningInitialization;
 }
 
 async function handleOffscreenRequest(request) {
@@ -89,19 +63,6 @@ async function handleOffscreenRequest(request) {
         return {
             success: true,
             detections
-        };
-    }
-
-    if (request.type === 'run_offscreen_reasoning') {
-        const agent = await getReasoningAgent();
-        const action = await agent.reason(
-            request.goal,
-            request.observation
-        );
-
-        return {
-            success: true,
-            action
         };
     }
 
@@ -169,4 +130,4 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
 });
 
-Logger.log('LOCAL_AGENT', 'Offscreen local AI document loaded');
+Logger.log('VISION', 'Offscreen local vision document loaded');
