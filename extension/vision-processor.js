@@ -1120,138 +1120,74 @@ class VisionProcessor {
      * Capture + privacy filtering + feature extraction
      */
     async processScreen() {
-
         try {
+            Logger.log('VISION', 'Starting screen processing...');
 
-            Logger.log(
-                'VISION',
-                'Starting screen processing...'
-            );
-
-
-            // ==================================================
-            // STEP 1: Capture viewport
-            // ==================================================
-
-            const canvas =
-                await this.captureViewport();
-
+            const canvas = await this.captureViewport();
 
             if (!canvas) {
-
-                Logger.error(
-                    'VISION',
-                    'Failed to capture viewport'
-                );
-
+                Logger.error('VISION', 'Failed to capture viewport');
                 return null;
             }
 
+            // Run local vision on the raw local canvas first. The raw pixels
+            // remain inside the browser and are never sent to the server.
+            const features = await this.extractFeatures(canvas);
 
-            // ==================================================
-            // STEP 2: Apply privacy filter
-            // ==================================================
+            const privacyFilter = new PrivacyFilter();
+            const redactions = privacyFilter.analyzePage();
 
-            const privacyFilter =
-                new PrivacyFilter();
-
-
-            const redactions =
-                privacyFilter.analyzePage();
-
-
-            // Create redaction mask
-            const redactionMask =
-                privacyFilter.createRedactionMask(
-                    redactions,
-                    canvas.width,
-                    canvas.height
-                );
-
-
-            // Apply redactions
-            const redactedCanvas =
-                privacyFilter.applyRedactionsToCanvas(
-                    canvas,
-                    redactions
-                );
-
-
-            // ==================================================
-            // STEP 3: Extract visual features
-            // ==================================================
-
-            const features =
-                await this.extractFeatures(
-                    redactedCanvas
-                );
-
-
-            // ==================================================
-            // STEP 4: Analyze page structure
-            // ==================================================
-
-            const pageStructure =
-                await this.analyzePageStructure();
-
-
-            // ==================================================
-            // STEP 5: Convert to JPEG
-            // ==================================================
-
-            const screenshot =
-                await canvasToJpeg(
-                    redactedCanvas,
-                    0.7
-                );
-
-
-            Logger.log(
-                'VISION',
-                'Screen processing complete',
-                {
-                    sensitiveElementsDetected:
-                        redactionMask
-                            ?.redactions
-                            ?.length || 0,
-
-                    screenshotSize:
-                        screenshot?.size || 0
-                }
+            // Vision detections are treated as additional local privacy signals.
+            // Only detections explicitly classified as sensitive are accepted.
+            const visionRedactions = privacyFilter.convertVisionDetections(
+                features?.uiDetections || [],
+                canvas.width,
+                canvas.height
             );
 
+            redactions.push(...visionRedactions);
+
+            const redactionMask = privacyFilter.createRedactionMask(
+                redactions,
+                canvas.width,
+                canvas.height
+            );
+
+            // Redaction happens before any screenshot serialization/network path.
+            const redactedCanvas = privacyFilter.applyRedactionsToCanvas(
+                canvas,
+                redactions
+            );
+
+            const pageStructure = await this.analyzePageStructure();
+
+            const screenshot = await canvasToJpeg(
+                redactedCanvas,
+                0.7
+            );
+
+            Logger.log('VISION', 'Screen processing complete', {
+                sensitiveElementsDetected: redactionMask?.redactions?.length || 0,
+                visualSensitiveDetections: visionRedactions.length,
+                screenshotSize: screenshot?.size || 0
+            });
 
             return {
-
-                screenshot:
-                    screenshot,
-
-                redactionMask:
-                    redactionMask,
-
-                features:
-                    features,
-
-                pageStructure:
-                    pageStructure,
-
-                timestamp:
-                    Date.now()
+                screenshot,
+                redactionMask,
+                features: {
+                    ...features,
+                    // Do not expose raw visual detections as server context.
+                    uiDetections: undefined
+                },
+                pageStructure,
+                timestamp: Date.now()
             };
-
-
         } catch (error) {
-
-            Logger.error(
-                'VISION',
-                'Error during screen processing',
-                error
-            );
-
+            Logger.error('VISION', 'Error during screen processing', error);
             return null;
         }
     }
-
 
     /**
      * Get session information
