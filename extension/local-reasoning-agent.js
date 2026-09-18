@@ -133,7 +133,7 @@ class LocalReasoningAgent {
                     element.enabled &&
                     !element.sensitive
                 )
-                .slice(0, 120)
+                .slice(0, 50)
                 .map(element => ({
                     element_id: element.agent_element_id,
                     tag: element.tag,
