@@ -32,14 +32,6 @@ class ExtensionManager {
                                 sendResponse({ success: false, error: error?.message || 'Offscreen vision request failed' });
                             });
                         return true;
-                    case 'offscreen_reasoning_request':
-                        this.handleOffscreenReasoningRequest(request)
-                            .then((result) => sendResponse(result))
-                            .catch((error) => {
-                                Logger.error('BG', 'Offscreen reasoning request failed', error);
-                                sendResponse({ success: false, error: error?.message || 'Offscreen reasoning request failed' });
-                            });
-                        return true;
                     case 'offscreen_vision_ready':
                         sendResponse({ success: true });
                         break;
@@ -56,7 +48,7 @@ class ExtensionManager {
             if (port.name !== 'privacy-browser-offscreen-ai') {
                 return;
             }
-            Logger.log('BG', 'Offscreen AI port connected');
+            Logger.log('BG', 'Offscreen vision port connected');
         });
 
         chrome.tabs.onActivated.addListener((activeInfo) => {
@@ -92,10 +84,10 @@ class ExtensionManager {
         await chrome.offscreen.createDocument({
             url: 'offscreen.html',
             reasons: ['BLOBS'],
-            justification: 'Run local ONNX vision and language inference outside webpage execution contexts.'
+            justification: 'Run local ONNX vision inference outside webpage execution contexts.'
         });
 
-        Logger.log('BG', 'Offscreen local AI document created');
+        Logger.log('BG', 'Offscreen local vision document created');
     }
 
     async handleOffscreenVisionRequest(request) {
@@ -106,15 +98,6 @@ class ExtensionManager {
             height: request.height,
             pixels: request.pixels
         }, 15000);
-    }
-
-    async handleOffscreenReasoningRequest(request) {
-        await this.ensureOffscreenDocument();
-        return this.sendOffscreenRequest({
-            type: 'run_offscreen_reasoning',
-            goal: request.goal,
-            observation: request.observation
-        }, 30000);
     }
 
     async sendOffscreenRequest(request, timeoutMs) {
