@@ -272,6 +272,67 @@ class PrivacyFilter {
     }
 
     /**
+     * Convert local vision detections into privacy redactions.
+     * Only known sensitive classes are accepted. Unknown UI detections are
+     * never treated as PII automatically.
+     */
+    convertVisionDetections(detections, canvasWidth, canvasHeight) {
+        const sensitiveClasses = new Set([
+            'face',
+            'person_face',
+            'id_card',
+            'passport',
+            'drivers_license',
+            'signature',
+            'qr_code',
+            'barcode',
+            'credit_card',
+            'sensitive_document'
+        ]);
+
+        if (!Array.isArray(detections)) {
+            return [];
+        }
+
+        const redactions = [];
+
+        for (const detection of detections) {
+            const type = String(
+                detection?.className || detection?.label || ''
+            ).toLowerCase().trim();
+            const bbox = detection?.bbox;
+
+            if (!sensitiveClasses.has(type) || !bbox) {
+                continue;
+            }
+
+            const clipped = this.clipToCanvas(
+                { width: canvasWidth, height: canvasHeight },
+                Number(bbox.x) || 0,
+                Number(bbox.y) || 0,
+                Number(bbox.width) || 0,
+                Number(bbox.height) || 0
+            );
+
+            if (clipped.width <= 0 || clipped.height <= 0) {
+                continue;
+            }
+
+            redactions.push({
+                id: `vision_${Date.now()}_${redactions.length}`,
+                type,
+                bbox: clipped,
+                confidence: Number(detection.confidence) || 0,
+                reason: 'local_vision_sensitive_detection',
+                priority: 'critical'
+            });
+        }
+
+        this.detectionStats.sensitiveDetected += redactions.length;
+        return redactions;
+    }
+
+    /**
      * Apply redactions to canvas
      */
     applyRedactionsToCanvas(canvas, redactions) {
