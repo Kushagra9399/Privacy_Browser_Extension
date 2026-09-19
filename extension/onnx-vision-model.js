@@ -17,10 +17,13 @@ class LocalOnnxVisionModel {
     constructor() {
         this.session = null;
         this.inputName = null;
-        this.inputWidth = 640;
-        this.inputHeight = 640;
-        this.confidenceThreshold = 0.25;
-        this.modelPath = 'models/gui-detector/model.onnx';
+        this.inputWidth = 320;
+        this.inputHeight = 320;
+        this.confidenceThreshold = 0.9;
+        this.nmsThreshold = 0.3;
+        this.topK = 500;
+        this.modelPath = 'models/face-detector/face_detection_yunet_2023mar.onnx';
+        this.modelType = 'yunet';
         this.initialized = false;
         this.lastPreprocess = null;
         this.loggedOutputDiagnostics = false;
@@ -180,45 +183,16 @@ class LocalOnnxVisionModel {
             throw new Error('Could not create ONNX preprocessing canvas');
         }
 
-        const scale = Math.min(
-            this.inputWidth / canvas.width,
-            this.inputHeight / canvas.height
-        );
-
-        const resizedWidth = Math.max(
-            1,
-            Math.round(canvas.width * scale)
-        );
-        const resizedHeight = Math.max(
-            1,
-            Math.round(canvas.height * scale)
-        );
-
-        const offsetX = Math.floor(
-            (this.inputWidth - resizedWidth) / 2
-        );
-        const offsetY = Math.floor(
-            (this.inputHeight - resizedHeight) / 2
-        );
-
-        ctx.fillStyle = '#114F3A';
-        ctx.fillRect(
-            0,
-            0,
-            this.inputWidth,
-            this.inputHeight
-        );
-
         ctx.drawImage(
             canvas,
             0,
             0,
             canvas.width,
             canvas.height,
-            offsetX,
-            offsetY,
-            resizedWidth,
-            resizedHeight
+            0,
+            0,
+            this.inputWidth,
+            this.inputHeight
         );
 
         const imageData = ctx.getImageData(
@@ -232,29 +206,119 @@ class LocalOnnxVisionModel {
         const planeSize = this.inputWidth * this.inputHeight;
         const tensor = new Float32Array(planeSize * 3);
 
+        // YuNet follows the OpenCV image convention. Canvas pixels are RGB,
+        // so write them as BGR and apply the model's 127.5 / 128 normalization.
         for (let y = 0; y < this.inputHeight; y++) {
             for (let x = 0; x < this.inputWidth; x++) {
-                const sourceIndex =
-                    (y * this.inputWidth + x) * 4;
-                const targetIndex =
-                    y * this.inputWidth + x;
+                const sourceIndex = (y * this.inputWidth + x) * 4;
+                const targetIndex = y * this.inputWidth + x;
 
-                tensor[targetIndex] =
-                    source[sourceIndex] / 255;
-                tensor[planeSize + targetIndex] =
-                    source[sourceIndex + 1] / 255;
-                tensor[(planeSize * 2) + targetIndex] =
-                    source[sourceIndex + 2] / 255;
+                const r = source[sourceIndex];
+                const g = source[sourceIndex + 1];
+                const b = source[sourceIndex + 2];
+
+                tensor[targetIndex] = (b - 127.5) / 128;
+                tensor[planeSize + targetIndex] = (g - 127.5) / 128;
+                tensor[(planeSize * 2) + targetIndex] = (r - 127.5) / 128;
             }
         }
 
         return {
             tensor,
-            scale,
-            offsetX,
-            offsetY,
-            resizedWidth,
-            resizedHeight
+            scaleX: canvas.width / this.inputWidth,
+            scaleY: canvas.height / this.inputHeight
+        };
+    }
+
+
+    parseYuNetOutputs(outputs, canvasWidth, canvasHeight, preprocessInfo) {
+        const detections = [];
+
+        for (const [outputName, output] of Object.entries(outputs)) {
+            if (!output?.data || !output?.dims) {
+                continue;
+            }
+
+            const dims = output.dims;
+            let rows = 0;
+            let columns = 0;
+
+            if (dims.length === 3) {
+                rows = dims[1];
+                columns = dims[2];
+            } else if (dims.length === 2) {
+                rows = dims[0];
+                columns = dims[1];
+            }
+
+            if (columns !== 15 || rows <= 0) {
+                continue;
+            }
+
+            const data = output.data;
+
+            for (let row = 0; row < rows; row++) {
+                const offset = row * columns;
+                const confidence = Number(data[offset + 14]);
+
+                if (!Number.isFinite(confidence) ||
+                    confidence < this.confidenceThreshold) {
+                    continue;
+                }
+
+                const x = Number(data[offset]);
+                const y = Number(data[offset + 1]);
+                const width = Number(data[offset + 2]);
+                const height = Number(data[offset + 3]);
+
+                if (![x, y, width, height].every(Number.isFinite) ||
+                    width <= 0 || height <= 0) {
+                    continue;
+                }
+
+                const scaleX = preprocessInfo?.scaleX || 1;
+                const scaleY = preprocessInfo?.scaleY || 1;
+
+                const bbox = this.clipToCanvas(
+                    canvasWidth,
+                    canvasHeight,
+                    x * scaleX,
+                    y * scaleY,
+                    width * scaleX,
+                    height * scaleY
+                );
+
+                if (bbox.width <= 0 || bbox.height <= 0) {
+                    continue;
+                }
+
+                detections.push({
+                    classId: 0,
+                    className: 'face',
+                    label: 'face',
+                    confidence,
+                    bbox
+                });
+            }
+        }
+
+        return this.nonMaximumSuppression(
+            detections,
+            this.nmsThreshold
+        ).slice(0, this.topK);
+    }
+
+    clipToCanvas(canvasWidth, canvasHeight, x, y, width, height) {
+        const left = Math.max(0, x);
+        const top = Math.max(0, y);
+        const right = Math.min(canvasWidth, x + width);
+        const bottom = Math.min(canvasHeight, y + height);
+
+        return {
+            x: left,
+            y: top,
+            width: Math.max(0, right - left),
+            height: Math.max(0, bottom - top)
         };
     }
 
@@ -264,6 +328,15 @@ class LocalOnnxVisionModel {
         canvasHeight,
         preprocessInfo
     ) {
+        if (this.modelType === 'yunet') {
+            return this.parseYuNetOutputs(
+                outputs,
+                canvasWidth,
+                canvasHeight,
+                preprocessInfo
+            );
+        }
+
         const detections = [];
 
         for (const [outputName, output] of Object.entries(outputs)) {
@@ -433,7 +506,7 @@ class LocalOnnxVisionModel {
         return this.nonMaximumSuppression(detections);
     }
 
-    nonMaximumSuppression(detections) {
+    nonMaximumSuppression(detections, threshold = 0.45) {
         const sorted = [...detections].sort(
             (a, b) => b.confidence - a.confidence
         );
@@ -444,7 +517,7 @@ class LocalOnnxVisionModel {
             kept.push(current);
 
             for (let i = sorted.length - 1; i >= 0; i--) {
-                if (this.iou(current.bbox, sorted[i].bbox) > 0.45) {
+                if (this.iou(current.bbox, sorted[i].bbox) > threshold) {
                     sorted.splice(i, 1);
                 }
             }
@@ -479,8 +552,8 @@ class LocalOnnxVisionModel {
 
 
 /**
- * Integrate the local detector into the existing VisionProcessor.
- * The existing DOM/feature pipeline remains intact.
+ * Integrate the local face detector into the existing VisionProcessor.
+ * DOM/regex privacy detection remains the first deterministic layer.
  */
 (() => {
     if (typeof VisionProcessor === 'undefined') {
