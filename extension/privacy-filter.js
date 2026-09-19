@@ -10,7 +10,7 @@ class PrivacyFilter {
             detectEmails: true,
             detectCreditCards: true,
             detectPhones: true,
-            detectFaces: false, // Requires face detection model
+            detectFaces: true,
             detectSSN: true,
             detectSensitiveInputs: true,
             redactionMode: 'blur', // 'blur', 'black', 'semantic'
