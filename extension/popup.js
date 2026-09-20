@@ -60,6 +60,7 @@ class PopupController {
             stepNumber: document.getElementById('stepNumber'),
             maxSteps: document.getElementById('maxSteps'),
             actionText: document.getElementById('actionText'),
+            reasoningText: document.getElementById('reasoningText'),
             statusBadge: document.getElementById('statusBadge'),
             errorCount: document.getElementById('errorCount'),
             errorInfoItem: document.getElementById('errorInfoItem'),
@@ -193,9 +194,17 @@ class PopupController {
                 break;
 
             case 'action_received':
-                this.agentElements.actionText.textContent = 
+                this.agentElements.actionText.textContent =
                     `${event.action_type}${event.reason ? ': ' + event.reason : ''}`;
-                this.addLog(`Action: ${event.action_type}`, 'action', 'agent');
+                if (this.agentElements.reasoningText) {
+                    this.agentElements.reasoningText.textContent =
+                        event.reasoning_summary || event.reason || 'No reasoning summary provided.';
+                }
+                this.addLog(
+                    `Action: ${event.action_type}${event.reasoning_summary ? ' — ' + event.reasoning_summary : ''}`,
+                    'action',
+                    'agent'
+                );
                 break;
 
             case 'action_executed':
@@ -330,6 +339,9 @@ class PopupController {
         
         this.agentElements.goalText.textContent = this.agentElements.userGoalInput.value;
         this.agentElements.actionText.textContent = 'Initializing...';
+        if (this.agentElements.reasoningText) {
+            this.agentElements.reasoningText.textContent = 'Waiting for agent reasoning...';
+        }
         this.agentElements.statusBadge.textContent = 'Running';
         this.agentElements.statusBadge.className = 'badge badge-running';
         
