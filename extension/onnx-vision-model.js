@@ -48,6 +48,11 @@ class LocalOnnxVisionModel {
         }
 
         const modelUrl = chrome.runtime.getURL(this.modelPath);
+
+        Logger.log(
+            'VISION',
+            'Loading local ONNX vision model: ' + this.modelPath
+        );
         const wasmPath = chrome.runtime.getURL(
             'node_modules/onnxruntime-web/dist/'
         );
@@ -76,6 +81,11 @@ class LocalOnnxVisionModel {
         }
 
         this.inputName = input.name;
+
+        Logger.log(
+            'VISION',
+            'ONNX input: ' + input.name + ' ' + JSON.stringify(input.dims)
+        );
 
         if (Array.isArray(input.dims) && input.dims.length === 4) {
             const height = Number(input.dims[2]);
@@ -125,6 +135,20 @@ class LocalOnnxVisionModel {
         const outputs = await this.session.run({
             [this.inputName]: inputTensor
         });
+
+        if (!this.loggedOutputDiagnostics) {
+            Logger.log(
+                'VISION',
+                'ONNX inference completed',
+                Object.fromEntries(
+                    Object.entries(outputs).map(([name, tensor]) => [
+                        name,
+                        tensor?.dims || null
+                    ])
+                )
+            );
+            this.loggedOutputDiagnostics = true;
+        }
 
         return this.parseOutputs(
             outputs,
