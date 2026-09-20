@@ -1248,7 +1248,7 @@ class VisionProcessor {
                     range.detach?.();
                 }
             } catch (error) {
-                Logger.warn(
+                Logger.error(
                     'PRIVACY',
                     'Local NER inference failed for text node',
                     error
