@@ -354,6 +354,11 @@ class ClientSessionManager {
                 // Build observation
                 const observation = await this.buildObservation();
                 
+                await this.recordPrivacyDebugRequest('/api/agent/observe', {
+                    session_id: this.sessionId,
+                    observation
+                });
+
                 Logger.log('SESSION', `Sending observation ${observation.observation_id}`);
                 
                 // Send to server
@@ -487,6 +492,40 @@ class ClientSessionManager {
             visual_context: visualContext
         };
     }
+    /**
+     * Store the exact outbound JSON payload locally for privacy inspection.
+     * This never sends debug data to the backend; it uses extension session storage only.
+     */
+    async recordPrivacyDebugRequest(endpoint, payload) {
+        try {
+            const serialized = JSON.stringify(payload);
+            const record = {
+                endpoint,
+                timestamp: new Date().toISOString(),
+                bytes: new Blob([serialized]).size,
+                payload
+            };
+
+            await chrome.storage.session.set({
+                privacyDebugLastRequest: record
+            });
+
+            chrome.runtime.sendMessage({
+                type: 'privacy_debug_update',
+                record
+            }).catch(() => {});
+
+            Logger.log('PRIVACY_DEBUG', 'Captured outbound backend payload locally', {
+                endpoint,
+                bytes: record.bytes,
+                screenshotPresent: !!payload?.observation?.visual_context?.screenshot,
+                redactionCount: payload?.observation?.visual_context?.redactionMask?.redactions?.length || 0
+            });
+        } catch (error) {
+            Logger.warn('PRIVACY_DEBUG', 'Could not capture outbound payload for inspection', error);
+        }
+    }
+
     /**
      * Remove common PII patterns from observation metadata.
      * This operates entirely inside the browser.
