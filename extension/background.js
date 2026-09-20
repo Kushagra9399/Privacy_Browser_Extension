@@ -266,3 +266,22 @@ setInterval(() => {
 }, 5 * 60 * 1000);
 
 Logger.log('BG', 'Background service worker started');
+
+
+// Privacy debug bridge
+chrome.runtime.onMessage.addListener((message, sender) => {
+    if (message?.type !== 'privacy_debug_capture' || !message.record) {
+        return;
+    }
+
+    chrome.storage.session.set({
+        privacyDebugLastRequest: message.record
+    }).then(() => {
+        return chrome.runtime.sendMessage({
+            type: 'privacy_debug_update',
+            record: message.record
+        });
+    }).catch((error) => {
+        console.warn('[PRIVACY_DEBUG] Failed to store or broadcast outbound payload', error);
+    });
+});
