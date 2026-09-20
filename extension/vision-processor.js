@@ -7,6 +7,7 @@
 class VisionProcessor {
     constructor() {
         this.model = null;
+        this.localPiiNer = null;
         this.initialized = false;
         this.sessionId = `session_${Date.now()}`;
         this.perf = new PerformanceMonitor();
@@ -27,6 +28,22 @@ class VisionProcessor {
             // The content script keeps the local feature-extraction pipeline
             // and the LocalOnnxVisionModel bridge handles offscreen inference.
             this.initialized = true;
+
+            try {
+                this.localPiiNer = new LocalPiiNer();
+                await this.localPiiNer.initialize();
+                Logger.log(
+                    'PRIVACY',
+                    'Local PII NER detector initialized'
+                );
+            } catch (error) {
+                this.localPiiNer = null;
+                Logger.warn(
+                    'PRIVACY',
+                    'Local PII NER unavailable; deterministic privacy filters remain active',
+                    error
+                );
+            }
 
             Logger.log(
                 'VISION',
@@ -1115,6 +1132,137 @@ class VisionProcessor {
     }
 
 
+    async detectTextPii() {
+        if (!this.localPiiNer) {
+            return [];
+        }
+
+        const redactions = [];
+        const walker = document.createTreeWalker(
+            document.body,
+            NodeFilter.SHOW_TEXT
+        );
+
+        let node;
+        let processed = 0;
+
+        while ((node = walker.nextNode()) && processed < 80) {
+            const text = node.textContent || '';
+            const trimmed = text.trim();
+
+            if (!trimmed || trimmed.length < 3) {
+                continue;
+            }
+
+            const parent = node.parentElement;
+            if (!parent) {
+                continue;
+            }
+
+            const style = window.getComputedStyle(parent);
+            if (
+                style.display === 'none' ||
+                style.visibility === 'hidden' ||
+                style.opacity === '0'
+            ) {
+                continue;
+            }
+
+            const parentRect = parent.getBoundingClientRect();
+            if (
+                parentRect.width <= 0 ||
+                parentRect.height <= 0 ||
+                parentRect.bottom <= 0 ||
+                parentRect.top >= window.innerHeight
+            ) {
+                continue;
+            }
+
+            try {
+                const entities = await this.localPiiNer.infer(
+                    trimmed.slice(0, 2000)
+                );
+
+                for (const entity of entities) {
+                    const start = Number(entity.start);
+                    const end = Number(entity.end);
+
+                    if (
+                        !Number.isInteger(start) ||
+                        !Number.isInteger(end) ||
+                        start < 0 ||
+                        end <= start ||
+                        end > trimmed.length
+                    ) {
+                        continue;
+                    }
+
+                    const rawStart = text.indexOf(trimmed);
+                    if (rawStart < 0) {
+                        continue;
+                    }
+
+                    const range = document.createRange();
+                    range.setStart(
+                        node,
+                        rawStart + start
+                    );
+                    range.setEnd(
+                        node,
+                        rawStart + end
+                    );
+
+                    const rects = Array.from(
+                        range.getClientRects()
+                    );
+
+                    for (const rect of rects) {
+                        if (
+                            rect.width <= 0 ||
+                            rect.height <= 0
+                        ) {
+                            continue;
+                        }
+
+                        redactions.push({
+                            id: `ner_${Date.now()}_${redactions.length}`,
+                            type: String(entity.type || 'PII').toLowerCase(),
+                            bbox: {
+                                x: Math.max(0, rect.x),
+                                y: Math.max(0, rect.y),
+                                width: Math.min(
+                                    rect.width,
+                                    window.innerWidth - Math.max(0, rect.x)
+                                ),
+                                height: Math.min(
+                                    rect.height,
+                                    window.innerHeight - Math.max(0, rect.y)
+                                )
+                            },
+                            confidence: Number(entity.confidence) || 0,
+                            reason: 'local_ner_sensitive_text',
+                            priority: 'high'
+                        });
+                    }
+
+                    range.detach?.();
+                }
+            } catch (error) {
+                Logger.warn(
+                    'PRIVACY',
+                    'Local NER inference failed for text node',
+                    error
+                );
+            }
+
+            processed++;
+        }
+
+        return redactions.filter(
+            item => item.bbox.width > 0 && item.bbox.height > 0
+        );
+    }
+
     /**
      * Process a complete screen
      * Capture + privacy filtering + feature extraction
@@ -1136,6 +1284,9 @@ class VisionProcessor {
 
             const privacyFilter = new PrivacyFilter();
             const redactions = privacyFilter.analyzePage();
+
+            const textPiiRedactions = await this.detectTextPii();
+            redactions.push(...textPiiRedactions);
 
             // Vision detections are treated as additional local privacy signals.
             // Only detections explicitly classified as sensitive are accepted.
@@ -1169,6 +1320,7 @@ class VisionProcessor {
             Logger.log('VISION', 'Screen processing complete', {
                 sensitiveElementsDetected: redactionMask?.redactions?.length || 0,
                 visualSensitiveDetections: visionRedactions.length,
+                localNerDetections: textPiiRedactions.length,
                 screenshotSize: screenshot?.size || 0
             });
 
