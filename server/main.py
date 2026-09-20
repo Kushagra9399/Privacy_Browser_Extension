@@ -266,7 +266,6 @@ class AgentSession:
         self.current_observation = observation
         self.page_revision += 1
         self.last_activity = datetime.utcnow()
-        print("Observations: ", observation.elements)
         logger.info(f"[{self.session_id}] Observation recorded: {len(observation.elements)} elements")
     
     def add_action(self, action: Action):
@@ -489,48 +488,44 @@ What is the next action you should take to accomplish the goal?
             )
     
     def _format_observation(self, observation: PageObservation) -> str:
-        """Format rich browser observation for agent reasoning"""
+        """Format a compact observation for agent reasoning.
 
+        Keep the prompt bounded because the Groq project has a strict TPM limit.
+        Only useful interactive metadata is sent to the model; privacy decisions
+        and raw pixels remain client-side.
+        """
         lines = [
-            f"URL: {observation.url}",
-            f"TITLE: {observation.title}",
+            f"URL: {observation.url[:160]}",
+            f"TITLE: {observation.title[:160]}",
             f"VIEWPORT: {observation.viewport_width}x{observation.viewport_height}",
             f"ELEMENT COUNT: {len(observation.elements)}",
             "",
-            "AVAILABLE INTERACTIVE ELEMENTS:",
+            "AVAILABLE INTERACTIVE ELEMENTS (MAX 60):",
         ]
 
-        for elem in observation.elements:
-            if not elem.interactive:
-                continue
+        interactive = [elem for elem in observation.elements if elem.interactive]
+        interactive.sort(key=lambda elem: (not elem.visible, elem.agent_element_id))
 
+        for elem in interactive[:60]:
             parts = [
                 f"ID={elem.agent_element_id}",
                 f"TAG=<{elem.tag}>",
+                f"VISIBLE={elem.visible}",
+                f"ENABLED={elem.enabled}",
             ]
 
             if elem.role:
-                parts.append(f"ROLE={elem.role}")
-
+                parts.append(f"ROLE={str(elem.role)[:40]}")
             if elem.element_type:
-                parts.append(f"TYPE={elem.element_type}")
-
+                parts.append(f"TYPE={str(elem.element_type)[:30]}")
             if elem.text_preview:
-                parts.append(f"TEXT=\"{elem.text_preview[:100]}\"")
-
+                parts.append(f"TEXT=\"{str(elem.text_preview)[:60]}\"")
             if elem.placeholder:
-                parts.append(f"PLACEHOLDER=\"{elem.placeholder[:100]}\"")
-
+                parts.append(f"PLACEHOLDER=\"{str(elem.placeholder)[:60]}\"")
             if elem.aria_label:
-                parts.append(f"ARIA_LABEL=\"{elem.aria_label[:100]}\"")
-
-            parts.append(f"VISIBLE={elem.visible}")
-            parts.append(f"ENABLED={elem.enabled}")
-
+                parts.append(f"ARIA=\"{str(elem.aria_label)[:60]}\"")
             if elem.sensitive:
-                parts.append(
-                    f"SENSITIVE={elem.sensitive_type or 'unknown'}"
-                )
+                parts.append(f"SENSITIVE={elem.sensitive_type or 'unknown'}")
 
             lines.append("  - " + " | ".join(parts))
 
