@@ -50,7 +50,7 @@ class LocalPiiNer {
         }
 
         const vocabText = await vocabResponse.text();
-        vocabText.split(/\\r?\\n/).forEach((token, index) => {
+        vocabText.split(/\r?\n/).forEach((token, index) => {
             if (token) {
                 this.vocab.set(token, index);
             }
@@ -74,7 +74,7 @@ class LocalPiiNer {
     async infer(text) {
         if (!this.isOffscreenContext) {
             const response = await chrome.runtime.sendMessage({
-                type: 'offscreen_pii_request',
+                type: 'run_offscreen_pii',
                 text
             });
             if (!response?.success) {
@@ -265,14 +265,14 @@ class LocalPiiNer {
     labelFromId(id) {
         const labels = [
             'O',
-            'B-MISC',
-            'I-MISC',
             'B-PER',
             'I-PER',
             'B-ORG',
             'I-ORG',
             'B-LOC',
-            'I-LOC'
+            'I-LOC',
+            'B-MISC',
+            'I-MISC'
         ];
 
         return labels[id] || 'O';
