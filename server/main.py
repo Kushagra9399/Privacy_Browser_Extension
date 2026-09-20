@@ -461,6 +461,11 @@ For FAILED: Explain what couldn't be accomplished.
                 f"HISTORY: {len(session.action_history)} actions taken so far.\n"
                 f"What is the next action you should take to accomplish the goal?"
             )
+            user_message = "\n".join(
+                line.strip()
+                for line in user_message.splitlines()
+                if line.strip()
+            )
             
             # Add to conversation history
             # session.conversation_history.append(AgentMessage(role="user", content=user_message))
