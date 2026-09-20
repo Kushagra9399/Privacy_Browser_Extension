@@ -160,6 +160,8 @@ class PopupController {
         const elements = observation.elements || [];
         const sensitiveElements = elements.filter(item => item.sensitive);
         const screenshot = visual.screenshot?.data || '';
+        const redactionMask = visual.redactionMask || {};
+        const maskRedactions = redactionMask.redactions || [];
 
         status.textContent = `Captured ${record.endpoint} at ${new Date(record.timestamp).toLocaleTimeString()}`;
         summary.innerHTML = `
@@ -167,6 +169,7 @@ class PopupController {
             <div><b>Elements sent:</b> ${elements.length}</div>
             <div><b>Sensitive DOM elements:</b> ${sensitiveElements.length}</div>
             <div><b>Visual redactions applied:</b> ${redactions.length}</div>
+            <div><b>Redaction mask received:</b> ${maskRedactions.length ? 'YES' : 'NO'}</div>
             <div><b>Screenshot included:</b> ${screenshot ? 'YES — redacted image' : 'NO'}</div>
             <div><b>Raw screenshot included:</b> NO</div>
         `;
