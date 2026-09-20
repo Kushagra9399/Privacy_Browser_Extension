@@ -628,6 +628,12 @@ function initializeAgentLoop() {
     if (!globalAgentLoop && typeof ClientSessionManager !== 'undefined' && typeof CommandExecutor !== 'undefined') {
         const sessionMgr = new ClientSessionManager();
         const cmdExecutor = new CommandExecutor();
+
+        // Reuse the already initialized VisionProcessor so agent observations
+        // pass through the same local privacy boundary before network access.
+        if (typeof agent !== 'undefined' && agent?.visionProcessor) {
+            sessionMgr.visionProcessor = agent.visionProcessor;
+        }
         globalAgentLoop = new AgentLoopOrchestrator(sessionMgr, cmdExecutor);
         
         Logger.log('LOOP', 'Global agent loop initialized');
