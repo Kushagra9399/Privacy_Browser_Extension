@@ -32,6 +32,14 @@ class ExtensionManager {
                                 sendResponse({ success: false, error: error?.message || 'Offscreen vision request failed' });
                             });
                         return true;
+                    case 'offscreen_pii_request':
+                        this.handleOffscreenPiiRequest(request)
+                            .then((result) => sendResponse(result))
+                            .catch((error) => {
+                                Logger.error('BG', 'Offscreen PII request failed', error);
+                                sendResponse({ success: false, error: error?.message || 'Offscreen PII request failed' });
+                            });
+                        return true;
                     case 'offscreen_vision_ready':
                         sendResponse({ success: true });
                         break;
@@ -98,6 +106,19 @@ class ExtensionManager {
             height: request.height,
             pixels: request.pixels
         }, 15000);
+    }
+
+    async handleOffscreenPiiRequest(request) {
+        await this.ensureOffscreenDocument();
+
+        const text = typeof request.text === 'string'
+            ? request.text.slice(0, 12000)
+            : '';
+
+        return this.sendOffscreenRequest({
+            type: 'run_offscreen_pii',
+            text
+        }, 10000);
     }
 
     async sendOffscreenRequest(request, timeoutMs) {
