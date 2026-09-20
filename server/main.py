@@ -53,7 +53,7 @@ CORS_ORIGINS = [
     origin.strip()
     for origin in os.getenv(
         'CORS_ORIGINS',
-        'http://localhost:3000,https://mail.google.com,https://gmail.com,chrome-extension://*'
+        'http://localhost:3000'
     ).split(',')
     if origin.strip()
 ]
@@ -441,7 +441,7 @@ For FAILED: Explain what couldn't be accomplished.
             )
         
         try:
-            # Build observation text for LLM
+            # Build compact observation text for LLM.
             observation_text = self._format_observation(observation)
             
             # Build previous result without multiline whitespace.
@@ -480,8 +480,12 @@ For FAILED: Explain what couldn't be accomplished.
             # Parse response
             response_text = response.choices[0].message.content
             response_json = json.loads(response_text)
-            print("Response Json")
-            print(response_json)
+            logger.debug(
+                "[%s] Groq response parsed: status=%s action=%s",
+                session.session_id,
+                response_json.get("status"),
+                (response_json.get("action") or {}).get("type")
+            )
             # Validate response
             groq_response = GroqResponse(**response_json)
             
@@ -644,11 +648,8 @@ app = FastAPI(
 # Configure CORS carefully
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        origin for origin in CORS_ORIGINS
-        if "*" not in origin
-    ],
-    allow_origin_regex=r"chrome-extension://.*|moz-extension://.*", 
+    allow_origins=CORS_ORIGINS,
+    allow_origin_regex=r"^(https?|chrome-extension|moz-extension)://.*$", 
     allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization"],
@@ -687,6 +688,7 @@ class GetActionResponse(BaseModel):
     """Next action for browser to execute"""
     success: bool
     action: Optional[Action] = None
+    reasoning_summary: Optional[str] = None
     error_code: Optional[ErrorCode] = None
     error_message: Optional[str] = None
     session_status: str
@@ -795,6 +797,7 @@ async def observe(request: ObserveRequest):
                     type=ActionType.FINISH,
                     reason=groq_response.message or "Task completed"
                 ),
+                reasoning_summary=groq_response.reasoning_summary,
                 session_status=session.status.value
             )
         
@@ -818,7 +821,6 @@ async def observe(request: ObserveRequest):
         
         action = groq_response.action
 
-        # Deterministic guard: "notifications" from a GitHub settings page
         # Validate element reference if needed
         if action.element_id and action.type not in [ActionType.SCROLL, ActionType.WAIT, ActionType.NAVIGATE, ActionType.FINISH]:
             # Verify element exists in current observation
@@ -841,6 +843,7 @@ async def observe(request: ObserveRequest):
         return GetActionResponse(
             success=True,
             action=action,
+            reasoning_summary=groq_response.reasoning_summary,
             session_status=session.status.value
         )
     
