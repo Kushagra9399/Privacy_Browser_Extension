@@ -68,8 +68,8 @@ class LocalPiiNer {
 
         Logger.log('PRIVACY', 'Local PII NER ONNX model loaded');
 
-        for (const input of this.session.getInputs()) {
-            this.inputNames[input.name.toLowerCase()] = input.name;
+        for (const inputName of this.session.inputNames || []) {
+            this.inputNames[inputName.toLowerCase()] = inputName;
         }
 
         return true;
@@ -128,15 +128,13 @@ class LocalPiiNer {
         attentionMask[position] = 1n;
 
         const makeTensor = (name, data) => {
-            const input = this.session.getInputs().find(
-                item => item.name === name
-            );
-            if (!input) {
+            const inputName = this.inputNames[name.toLowerCase()] || name;
+            if (!this.session.inputNames?.includes(inputName)) {
                 return null;
             }
 
             return new window.ort.Tensor(
-                input.type === 'int64' ? 'int64' : 'int64',
+                'int64',
                 data,
                 [1, this.maxLength]
             );
