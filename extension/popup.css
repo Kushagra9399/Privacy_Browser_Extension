@@ -357,3 +357,18 @@ footer a:hover {
     padding: 10px;
     font: 10px/1.4 'Courier New', monospace;
 }
+
+/* Agent reasoning */
+.reasoning-item {
+    align-items: flex-start;
+    gap: 10px;
+}
+
+.reasoning-display {
+    flex: 1;
+    color: #4b5563;
+    font-size: 12px;
+    line-height: 1.45;
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
