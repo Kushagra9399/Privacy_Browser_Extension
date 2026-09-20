@@ -353,22 +353,22 @@ class ClientSessionManager {
             return await this.perf.measureAsync('OBSERVE_CYCLE', async () => {
                 // Build observation
                 const observation = await this.buildObservation();
-                
-                await this.recordPrivacyDebugRequest('/api/agent/observe', {
+
+                const requestPayload = {
                     session_id: this.sessionId,
                     observation
-                });
+                };
+                const requestBody = JSON.stringify(requestPayload);
+
+                await this.recordPrivacyDebugRequest('/api/agent/observe', requestBody);
 
                 Logger.log('SESSION', `Sending observation ${observation.observation_id}`);
                 
-                // Send to server
+                // Send the exact same serialized body captured by the privacy inspector.
                 const response = await fetch(`${this.serverUrl}/api/agent/observe`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        session_id: this.sessionId,
-                        observation: observation
-                    })
+                    body: requestBody
                 });
                 
                 if (!response.ok) {
@@ -496,9 +496,10 @@ class ClientSessionManager {
      * Store the exact outbound JSON payload locally for privacy inspection.
      * This never sends debug data to the backend; it uses extension session storage only.
      */
-    async recordPrivacyDebugRequest(endpoint, payload) {
+    async recordPrivacyDebugRequest(endpoint, requestBody) {
         try {
-            const serialized = JSON.stringify(payload);
+            const serialized = String(requestBody || '');
+            const payload = JSON.parse(serialized);
             const record = {
                 endpoint,
                 timestamp: new Date().toISOString(),
@@ -506,16 +507,17 @@ class ClientSessionManager {
                 payload
             };
 
-            await chrome.storage.session.set({
-                privacyDebugLastRequest: record
+            await new Promise((resolve) => {
+                chrome.runtime.sendMessage({
+                    type: 'privacy_debug_capture',
+                    record
+                }, () => {
+                    void chrome.runtime.lastError;
+                    resolve();
+                });
             });
 
-            chrome.runtime.sendMessage({
-                type: 'privacy_debug_update',
-                record
-            }).catch(() => {});
-
-            Logger.log('PRIVACY_DEBUG', 'Captured outbound backend payload locally', {
+            Logger.log('PRIVACY_DEBUG', 'Captured exact outbound backend payload through extension background', {
                 endpoint,
                 bytes: record.bytes,
                 screenshotPresent: !!payload?.observation?.visual_context?.screenshot,
