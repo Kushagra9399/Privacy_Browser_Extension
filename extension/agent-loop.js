@@ -164,7 +164,8 @@ class AgentLoopOrchestrator {
                 this.notifyPopup({
                     type: 'action_received',
                     action_type: action.type,
-                    reason: action.reason || ''
+                    reason: action.reason || '',
+                    reasoning_summary: action.reasoning_summary || ''
                 });
                 
                 // Check for completion
