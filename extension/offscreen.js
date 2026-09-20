@@ -6,6 +6,25 @@
 
 let visionModel = null;
 let visionInitialization = null;
+let piiModel = null;
+let piiInitialization = null;
+
+async function getPiiModel() {
+    if (piiModel) {
+        return piiModel;
+    }
+
+    if (!piiInitialization) {
+        piiInitialization = (async () => {
+            const model = new LocalPiiNer();
+            await model.initialize();
+            piiModel = model;
+            return model;
+        })();
+    }
+
+    return piiInitialization;
+}
 async function getVisionModel() {
     if (visionModel?.initialized) {
         return visionModel;
@@ -24,6 +43,24 @@ async function getVisionModel() {
 }
 
 async function handleOffscreenRequest(request) {
+    if (request.type === 'run_offscreen_pii') {
+        const text = typeof request.text === 'string'
+            ? request.text.slice(0, 12000)
+            : '';
+
+        if (!text.trim()) {
+            return { success: true, entities: [] };
+        }
+
+        const model = await getPiiModel();
+        const entities = await model.detect(text);
+
+        return {
+            success: true,
+            entities
+        };
+    }
+
     if (request.type === 'run_offscreen_vision') {
         const model = await getVisionModel();
         const width = Number(request.width);
