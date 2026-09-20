@@ -396,6 +396,7 @@ class ClientSessionManager {
                 
                 if (data.action) {
                     Logger.log('SESSION', `Received action: ${data.action.type}`);
+                    data.action.reasoning_summary = data.reasoning_summary || '';
                 }
                 
                 return data.action;
