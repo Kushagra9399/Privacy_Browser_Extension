@@ -56,6 +56,8 @@ class LocalPiiNer {
             }
         });
 
+        Logger.log('PRIVACY', 'Loading local PII NER ONNX model');
+
         this.session = await window.ort.InferenceSession.create(
             modelUrl,
             {
@@ -63,6 +65,8 @@ class LocalPiiNer {
                 graphOptimizationLevel: 'all'
             }
         );
+
+        Logger.log('PRIVACY', 'Local PII NER ONNX model loaded');
 
         for (const input of this.session.getInputs()) {
             this.inputNames[input.name.toLowerCase()] = input.name;
@@ -177,11 +181,13 @@ class LocalPiiNer {
             throw new Error('NER model logits output was not found');
         }
 
-        return this.decodeLogits(
+        const entities = this.decodeLogits(
             logits,
             usable,
             position
         );
+
+        return entities;
     }
 
     findLogits(outputs) {
