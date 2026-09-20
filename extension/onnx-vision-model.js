@@ -21,7 +21,7 @@ class LocalOnnxVisionModel {
         this.inputHeight = 320;
         this.confidenceThreshold = 0.9;
         this.nmsThreshold = 0.3;
-        this.topK = 500;
+        this.topK = 5000;
         this.modelPath = 'models/face-detector/face_detection_yunet_2023mar.onnx';
         this.modelType = 'yunet';
         this.initialized = false;
@@ -183,6 +183,9 @@ class LocalOnnxVisionModel {
             throw new Error('Could not create ONNX preprocessing canvas');
         }
 
+        ctx.fillStyle = '#000000';
+        ctx.fillRect(0, 0, this.inputWidth, this.inputHeight);
+
         ctx.drawImage(
             canvas,
             0,
@@ -206,8 +209,8 @@ class LocalOnnxVisionModel {
         const planeSize = this.inputWidth * this.inputHeight;
         const tensor = new Float32Array(planeSize * 3);
 
-        // YuNet follows the OpenCV image convention. Canvas pixels are RGB,
-        // so write them as BGR and apply the model's 127.5 / 128 normalization.
+        // OpenCV's YuNet implementation feeds BGR float pixels in the
+        // original 0-255 range. Canvas provides RGB, so convert RGB -> BGR.
         for (let y = 0; y < this.inputHeight; y++) {
             for (let x = 0; x < this.inputWidth; x++) {
                 const sourceIndex = (y * this.inputWidth + x) * 4;
@@ -217,9 +220,9 @@ class LocalOnnxVisionModel {
                 const g = source[sourceIndex + 1];
                 const b = source[sourceIndex + 2];
 
-                tensor[targetIndex] = (b - 127.5) / 128;
-                tensor[planeSize + targetIndex] = (g - 127.5) / 128;
-                tensor[(planeSize * 2) + targetIndex] = (r - 127.5) / 128;
+                tensor[targetIndex] = b;
+                tensor[planeSize + targetIndex] = g;
+                tensor[(planeSize * 2) + targetIndex] = r;
             }
         }
 
@@ -230,66 +233,115 @@ class LocalOnnxVisionModel {
         };
     }
 
-
     parseYuNetOutputs(outputs, canvasWidth, canvasHeight, preprocessInfo) {
         const detections = [];
+        const strides = [8, 16, 32];
 
-        for (const [outputName, output] of Object.entries(outputs)) {
-            if (!output?.data || !output?.dims) {
+        const outputByName = new Map(
+            Object.entries(outputs).map(([name, tensor]) => [name, tensor])
+        );
+
+        for (const stride of strides) {
+            const clsTensor = outputByName.get(`cls_${stride}`);
+            const objTensor = outputByName.get(`obj_${stride}`);
+            const bboxTensor = outputByName.get(`bbox_${stride}`);
+            const kpsTensor = outputByName.get(`kps_${stride}`);
+
+            if (!clsTensor || !objTensor || !bboxTensor || !kpsTensor) {
+                Logger.warn(
+                    'VISION',
+                    `YuNet outputs missing for stride ${stride}`
+                );
                 continue;
             }
 
-            const dims = output.dims;
-            let rows = 0;
-            let columns = 0;
+            const cls = clsTensor.data;
+            const obj = objTensor.data;
+            const bbox = bboxTensor.data;
+            const kps = kpsTensor.data;
 
-            if (dims.length === 3) {
-                rows = dims[1];
-                columns = dims[2];
-            } else if (dims.length === 2) {
-                rows = dims[0];
-                columns = dims[1];
-            }
+            const gridWidth = Math.ceil(this.inputWidth / stride);
+            const gridHeight = Math.ceil(this.inputHeight / stride);
+            const expectedCount = gridWidth * gridHeight;
+            const count = Math.min(
+                expectedCount,
+                cls.length,
+                obj.length,
+                Math.floor(bbox.length / 4),
+                Math.floor(kps.length / 10)
+            );
 
-            if (columns !== 15 || rows <= 0) {
-                continue;
-            }
+            for (let index = 0; index < count; index++) {
+                let clsScore = Number(cls[index]);
+                let objScore = Number(obj[index]);
 
-            const data = output.data;
-
-            for (let row = 0; row < rows; row++) {
-                const offset = row * columns;
-                const confidence = Number(data[offset + 14]);
-
-                if (!Number.isFinite(confidence) ||
-                    confidence < this.confidenceThreshold) {
+                if (!Number.isFinite(clsScore) ||
+                    !Number.isFinite(objScore)) {
                     continue;
                 }
 
-                const x = Number(data[offset]);
-                const y = Number(data[offset + 1]);
-                const width = Number(data[offset + 2]);
-                const height = Number(data[offset + 3]);
+                clsScore = Math.max(0, Math.min(1, clsScore));
+                objScore = Math.max(0, Math.min(1, objScore));
 
-                if (![x, y, width, height].every(Number.isFinite) ||
+                const confidence = Math.sqrt(clsScore * objScore);
+
+                if (confidence < this.confidenceThreshold) {
+                    continue;
+                }
+
+                const row = Math.floor(index / gridWidth);
+                const column = index % gridWidth;
+                const bboxOffset = index * 4;
+
+                const cx =
+                    (column + Number(bbox[bboxOffset])) * stride;
+                const cy =
+                    (row + Number(bbox[bboxOffset + 1])) * stride;
+                const width =
+                    Math.exp(Number(bbox[bboxOffset + 2])) * stride;
+                const height =
+                    Math.exp(Number(bbox[bboxOffset + 3])) * stride;
+
+                if (![cx, cy, width, height].every(Number.isFinite) ||
                     width <= 0 || height <= 0) {
                     continue;
                 }
 
+                const modelLeft = cx - width / 2;
+                const modelTop = cy - height / 2;
                 const scaleX = preprocessInfo?.scaleX || 1;
                 const scaleY = preprocessInfo?.scaleY || 1;
 
-                const bbox = this.clipToCanvas(
+                const left = modelLeft * scaleX;
+                const top = modelTop * scaleY;
+                const scaledWidth = width * scaleX;
+                const scaledHeight = height * scaleY;
+
+                const clipped = this.clipToCanvas(
                     canvasWidth,
                     canvasHeight,
-                    x * scaleX,
-                    y * scaleY,
-                    width * scaleX,
-                    height * scaleY
+                    left,
+                    top,
+                    scaledWidth,
+                    scaledHeight
                 );
 
-                if (bbox.width <= 0 || bbox.height <= 0) {
+                if (clipped.width <= 0 || clipped.height <= 0) {
                     continue;
+                }
+
+                const landmarks = [];
+                const kpsOffset = index * 10;
+
+                for (let point = 0; point < 5; point++) {
+                    landmarks.push({
+                        x: (
+                            Number(kps[kpsOffset + point * 2]) + column
+                        ) * stride * scaleX,
+                        y: (
+                            Number(kps[kpsOffset + point * 2 + 1]) + row
+                        ) * stride * scaleY
+                    });
                 }
 
                 detections.push({
@@ -297,7 +349,8 @@ class LocalOnnxVisionModel {
                     className: 'face',
                     label: 'face',
                     confidence,
-                    bbox
+                    bbox: clipped,
+                    landmarks
                 });
             }
         }
@@ -307,6 +360,7 @@ class LocalOnnxVisionModel {
             this.nmsThreshold
         ).slice(0, this.topK);
     }
+
 
     clipToCanvas(canvasWidth, canvasHeight, x, y, width, height) {
         const left = Math.max(0, x);
