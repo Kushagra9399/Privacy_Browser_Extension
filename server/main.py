@@ -49,7 +49,14 @@ GROQ_MODEL = os.getenv('GROQ_MODEL', 'mixtral-8x7b-32768')
 SERVER_HOST = os.getenv('SERVER_HOST', '0.0.0.0')
 SERVER_PORT = int(os.getenv('SERVER_PORT', '8000'))
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
-CORS_ORIGINS = os.getenv('CORS_ORIGINS', 'http://localhost:3000,chrome-extension://*').split(',')
+CORS_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv(
+        'CORS_ORIGINS',
+        'http://localhost:3000,https://mail.google.com,https://gmail.com,chrome-extension://*'
+    ).split(',')
+    if origin.strip()
+]
 MAX_AGENT_STEPS = int(os.getenv('MAX_AGENT_STEPS', '20'))
 ACTION_TIMEOUT = int(os.getenv('ACTION_TIMEOUT', '30000'))  # ms
 AGENT_TIMEOUT = int(os.getenv('AGENT_TIMEOUT', '60000'))   # ms
@@ -374,8 +381,8 @@ CRITICAL RULES:
 7. Never request or attempt to use passwords, credit cards, or sensitive data.
 8. Stop when the user's goal is accomplished.
 9. Always verify your observations before acting.
-10. When the user asks for a destination inside a site's settings, prefer the site's settings URL rather than a global/public equivalent.
-11. For GitHub, if the current page is under https://github.com/settings/ and the user asks for "notifications" or "notification settings", use https://github.com/settings/notifications. Do NOT use https://github.com/notifications.
+10. When the user asks for a destination inside a site's settings, prefer that site's settings/navigation destination rather than a similarly named global/public destination.
+11. When choosing a navigation URL, use the current site's actual links and page context when available. Do not assume a site-specific URL pattern unless it is present in the observation or clearly established by the site.
 12. For navigation actions, always put the destination in the "url" field, never in "text".
 
 SUPPORTED ACTION TYPES:
@@ -638,8 +645,8 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://github.com",
-        "https://www.github.com",
+        origin for origin in CORS_ORIGINS
+        if "*" not in origin
     ],
     allow_origin_regex=r"chrome-extension://.*|moz-extension://.*", 
     allow_credentials=False,
@@ -812,18 +819,6 @@ async def observe(request: ObserveRequest):
         action = groq_response.action
 
         # Deterministic guard: "notifications" from a GitHub settings page
-        # means notification settings, not GitHub's global notifications inbox.
-        goal_normalized = session.user_goal.strip().lower()
-        current_url = request.observation.url.strip().lower()
-        if (
-            action.type == ActionType.NAVIGATE
-            and "notification" in goal_normalized
-            and current_url.startswith("https://github.com/settings/")
-        ):
-            action.url = "https://github.com/settings/notifications"
-            action.text = None
-            action.reason = "Open GitHub notification settings because the goal is a settings destination."
-
         # Validate element reference if needed
         if action.element_id and action.type not in [ActionType.SCROLL, ActionType.WAIT, ActionType.NAVIGATE, ActionType.FINISH]:
             # Verify element exists in current observation
