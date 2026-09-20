@@ -71,3 +71,31 @@ It must be packaged with the extension before loading the extension.
 
 Source:
 https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet
+
+
+## Optional local PII NER model
+
+The contextual text detector is optional and runs entirely in the extension
+offscreen document.
+
+From the extension directory:
+
+```bash
+bash download-pii-model.sh
+```
+
+It creates:
+
+```text
+models/pii-ner/model_int8.onnx
+models/pii-ner/vocab.txt
+```
+
+The NER layer complements, rather than replaces, deterministic detection.
+Passwords, emails, phone numbers, credit cards and SSNs continue to use DOM
+semantics and regex/Luhn checks.
+
+For NER entities, the content script creates a DOM Range over the detected
+local text span and converts that Range to screen coordinates before the
+screenshot is serialized. The detected text itself is never sent to the
+server.
