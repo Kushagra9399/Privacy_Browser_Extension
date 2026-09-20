@@ -269,6 +269,11 @@ class AgentLoopOrchestrator {
                     error_message: error.message
                 });
 
+                if (!this.sessionManager.isRunning) {
+                    this.stopForSafety(`Session became inactive: ${error.message}`);
+                    break;
+                }
+
                 if (this.errorCount >= 3) {
                     this.stopForSafety(`Repeated loop errors: ${error.message}`);
                     break;
