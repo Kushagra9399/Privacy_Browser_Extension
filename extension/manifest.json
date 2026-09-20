@@ -34,6 +34,7 @@
         "privacy-filter.js",
         "vision-processor.js",
         "onnx-vision-model.js",
+        "pii-ner.js",
         "command-executor.js",
         "session-manager.js",
         "agent-loop.js",
