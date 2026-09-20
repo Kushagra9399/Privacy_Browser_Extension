@@ -453,7 +453,7 @@ What is the next action you should take to accomplish the goal?
                 model=GROQ_MODEL,
                 messages=messages,
                 temperature=0.3,  # Lower temperature for reliability
-                max_tokens=1000,
+                max_tokens=500,
                 response_format={"type": "json_object"}
             )
             
@@ -500,13 +500,13 @@ What is the next action you should take to accomplish the goal?
             f"VIEWPORT: {observation.viewport_width}x{observation.viewport_height}",
             f"ELEMENT COUNT: {len(observation.elements)}",
             "",
-            "AVAILABLE INTERACTIVE ELEMENTS (MAX 60):",
+            "AVAILABLE INTERACTIVE ELEMENTS (MAX 40):",
         ]
 
         interactive = [elem for elem in observation.elements if elem.interactive]
         interactive.sort(key=lambda elem: (not elem.visible, elem.agent_element_id))
 
-        for elem in interactive[:60]:
+        for elem in interactive[:40]:
             parts = [
                 f"ID={elem.agent_element_id}",
                 f"TAG=<{elem.tag}>",
