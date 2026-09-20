@@ -374,6 +374,9 @@ CRITICAL RULES:
 7. Never request or attempt to use passwords, credit cards, or sensitive data.
 8. Stop when the user's goal is accomplished.
 9. Always verify your observations before acting.
+10. When the user asks for a destination inside a site's settings, prefer the site's settings URL rather than a global/public equivalent.
+11. For GitHub, if the current page is under https://github.com/settings/ and the user asks for "notifications" or "notification settings", use https://github.com/settings/notifications. Do NOT use https://github.com/notifications.
+12. For navigation actions, always put the destination in the "url" field, never in "text".
 
 SUPPORTED ACTION TYPES:
 - click: Click on an element
@@ -434,24 +437,23 @@ For FAILED: Explain what couldn't be accomplished.
             # Build observation text for LLM
             observation_text = self._format_observation(observation)
             
-            # Build previous result if exists
+            # Build previous result without multiline whitespace.
             result_text = ""
             if action_result:
-                result_text = f"\n\nPREVIOUS ACTION RESULT:\nAction: {session.action_history[-1].type}\nSuccess: {action_result.success}\nError: {action_result.error_message}\n"
-            
-            # Build user message
-            user_message = f"""
-USER GOAL: {session.user_goal}
+                previous_action = session.action_history[-1].type if session.action_history else "unknown"
+                result_text = (
+                    f"PREVIOUS ACTION RESULT: Action={previous_action} | "
+                    f"Success={action_result.success} | "
+                    f"Error={self._clean_text(action_result.error_message or 'none')}"
+                )
 
-CURRENT PAGE STATE:
-{observation_text}
-
-{result_text}
-
-HISTORY: {len(session.action_history)} actions taken so far.
-
-What is the next action you should take to accomplish the goal?
-"""
+            user_message = (
+                f"USER GOAL: {self._clean_text(session.user_goal)}\n"
+                f"CURRENT PAGE STATE:\n{observation_text}\n"
+                f"{result_text}\n"
+                f"HISTORY: {len(session.action_history)} actions taken so far.\n"
+                f"What is the next action you should take to accomplish the goal?"
+            )
             
             # Add to conversation history
             # session.conversation_history.append(AgentMessage(role="user", content=user_message))
@@ -498,19 +500,20 @@ What is the next action you should take to accomplish the goal?
                 message=f"Error: {str(e)}"
             )
     
-    def _format_observation(self, observation: PageObservation) -> str:
-        """Format a compact observation for agent reasoning.
+    @staticmethod
+    def _clean_text(value: Any, limit: int = 160) -> str:
+        """Collapse all frontend whitespace into single spaces."""
+        if value is None:
+            return ""
+        return " ".join(str(value).split())[:limit]
 
-        Keep the prompt bounded because the Groq project has a strict TPM limit.
-        Only useful interactive metadata is sent to the model; privacy decisions
-        and raw pixels remain client-side.
-        """
+    def _format_observation(self, observation: PageObservation) -> str:
+        """Format a compact observation with one line per interactive element."""
         lines = [
-            f"URL: {observation.url[:160]}",
-            f"TITLE: {observation.title[:160]}",
+            f"URL: {self._clean_text(observation.url)}",
+            f"TITLE: {self._clean_text(observation.title)}",
             f"VIEWPORT: {observation.viewport_width}x{observation.viewport_height}",
             f"ELEMENT COUNT: {len(observation.elements)}",
-            "",
             "AVAILABLE INTERACTIVE ELEMENTS (MAX 40):",
         ]
 
@@ -519,26 +522,24 @@ What is the next action you should take to accomplish the goal?
 
         for elem in interactive[:40]:
             parts = [
-                f"ID={elem.agent_element_id}",
-                f"TAG=<{elem.tag}>",
+                f"ID={self._clean_text(elem.agent_element_id, 40)}",
+                f"TAG=<{self._clean_text(elem.tag, 30)}>",
                 f"VISIBLE={elem.visible}",
                 f"ENABLED={elem.enabled}",
             ]
-
             if elem.role:
-                parts.append(f"ROLE={str(elem.role)[:40]}")
+                parts.append(f"ROLE={self._clean_text(elem.role, 40)}")
             if elem.element_type:
-                parts.append(f"TYPE={str(elem.element_type)[:30]}")
+                parts.append(f"TYPE={self._clean_text(elem.element_type, 30)}")
             if elem.text_preview:
-                parts.append(f"TEXT=\"{str(elem.text_preview)[:60]}\"")
+                parts.append(f"TEXT=\"{self._clean_text(elem.text_preview, 60)}\"")
             if elem.placeholder:
-                parts.append(f"PLACEHOLDER=\"{str(elem.placeholder)[:60]}\"")
+                parts.append(f"PLACEHOLDER=\"{self._clean_text(elem.placeholder, 60)}\"")
             if elem.aria_label:
-                parts.append(f"ARIA=\"{str(elem.aria_label)[:60]}\"")
+                parts.append(f"ARIA=\"{self._clean_text(elem.aria_label, 60)}\"")
             if elem.sensitive:
-                parts.append(f"SENSITIVE={elem.sensitive_type or 'unknown'}")
-
-            lines.append("  - " + " | ".join(parts))
+                parts.append(f"SENSITIVE={self._clean_text(elem.sensitive_type or 'unknown', 30)}")
+            lines.append("- " + " | ".join(parts))
 
         return "\n".join(lines)
 
@@ -809,7 +810,20 @@ async def observe(request: ObserveRequest):
             )
         
         action = groq_response.action
-        
+
+        # Deterministic guard: "notifications" from a GitHub settings page
+        # means notification settings, not GitHub's global notifications inbox.
+        goal_normalized = session.user_goal.strip().lower()
+        current_url = request.observation.url.strip().lower()
+        if (
+            action.type == ActionType.NAVIGATE
+            and "notification" in goal_normalized
+            and current_url.startswith("https://github.com/settings/")
+        ):
+            action.url = "https://github.com/settings/notifications"
+            action.text = None
+            action.reason = "Open GitHub notification settings because the goal is a settings destination."
+
         # Validate element reference if needed
         if action.element_id and action.type not in [ActionType.SCROLL, ActionType.WAIT, ActionType.NAVIGATE, ActionType.FINISH]:
             # Verify element exists in current observation
