@@ -74,7 +74,13 @@ class LocalOnnxVisionModel {
             }
         );
 
-        const input = this.session.getInputs()[0];
+        const inputName = this.session.inputNames?.[0];
+        const input = inputName
+            ? {
+                name: inputName,
+                ...(this.session.inputMetadata?.find(item => item.name === inputName) || {})
+            }
+            : null;
 
         if (!input) {
             throw new Error('ONNX model has no input tensor');
