@@ -182,6 +182,12 @@ class LocalOnnxVisionModel {
         });
 
         if (!response?.success) {
+            Logger.error(
+                'VISION',
+                'Offscreen vision inference returned an error',
+                response?.error || response
+            );
+
             throw new Error(
                 response?.error || 'Offscreen vision inference failed'
             );
