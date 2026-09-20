@@ -7,18 +7,16 @@
  * Expected model:
  *   models/gui-detector/model.onnx
  *
- * The model accepts RGB image input and produces YOLO-style
- * object-detection output. The current parser handles the
- * model's multiple [x, y, w, h, objectness, classScore]
- * output heads and combines them before NMS.
+ * The model accepts BGR float32 image input at 640x640 and produces
+ * YuNet's multi-scale face-detection heads.
  */
 
 class LocalOnnxVisionModel {
     constructor() {
         this.session = null;
         this.inputName = null;
-        this.inputWidth = 320;
-        this.inputHeight = 320;
+        this.inputWidth = 640;
+        this.inputHeight = 640;
         this.confidenceThreshold = 0.9;
         this.nmsThreshold = 0.3;
         this.topK = 5000;
