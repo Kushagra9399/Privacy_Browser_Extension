@@ -17,6 +17,8 @@ class PopupController {
         this.loadConfiguration();
         this.setupEventListeners();
         this.listenForAgentEvents();
+        this.listenForPrivacyDebug();
+        this.loadPrivacyDebug();
     }
 
     initializeUI() {
@@ -109,6 +111,74 @@ class PopupController {
                 sendResponse({ received: true });
             }
         });
+    }
+
+    listenForPrivacyDebug() {
+        chrome.runtime.onMessage.addListener((request) => {
+            if (request.type === 'privacy_debug_update' && request.record) {
+                this.renderPrivacyDebug(request.record);
+            }
+        });
+
+        const clearButton = document.getElementById('clearPrivacyDebug');
+        if (clearButton) {
+            clearButton.addEventListener('click', async () => {
+                await chrome.storage.session.remove('privacyDebugLastRequest');
+                this.renderPrivacyDebug(null);
+            });
+        }
+    }
+
+    async loadPrivacyDebug() {
+        try {
+            const data = await chrome.storage.session.get('privacyDebugLastRequest');
+            this.renderPrivacyDebug(data.privacyDebugLastRequest || null);
+        } catch (error) {
+            this.renderPrivacyDebug(null);
+        }
+    }
+
+    renderPrivacyDebug(record) {
+        const status = document.getElementById('privacyDebugStatus');
+        const summary = document.getElementById('privacyDebugSummary');
+        const json = document.getElementById('privacyDebugJson');
+        const image = document.getElementById('privacyDebugImage');
+        if (!status || !summary || !json || !image) return;
+
+        if (!record) {
+            status.textContent = 'Waiting for an outbound backend request...';
+            summary.innerHTML = '';
+            json.textContent = 'No request captured yet.';
+            image.removeAttribute('src');
+            return;
+        }
+
+        const observation = record.payload?.observation || {};
+        const visual = observation.visual_context || {};
+        const redactions = visual.redactionMask?.redactions || [];
+        const elements = observation.elements || [];
+        const sensitiveElements = elements.filter(item => item.sensitive);
+        const screenshot = visual.screenshot?.data || '';
+
+        status.textContent = `Captured ${record.endpoint} at ${new Date(record.timestamp).toLocaleTimeString()}`;
+        summary.innerHTML = `
+            <div><b>Payload size:</b> ${Number(record.bytes || 0).toLocaleString()} bytes</div>
+            <div><b>Elements sent:</b> ${elements.length}</div>
+            <div><b>Sensitive DOM elements:</b> ${sensitiveElements.length}</div>
+            <div><b>Visual redactions applied:</b> ${redactions.length}</div>
+            <div><b>Screenshot included:</b> ${screenshot ? 'YES — redacted image' : 'NO'}</div>
+            <div><b>Raw screenshot included:</b> NO</div>
+        `;
+
+        if (screenshot) {
+            image.src = screenshot;
+            image.style.display = 'block';
+        } else {
+            image.removeAttribute('src');
+            image.style.display = 'none';
+        }
+
+        json.textContent = JSON.stringify(record.payload, null, 2);
     }
 
     /**
