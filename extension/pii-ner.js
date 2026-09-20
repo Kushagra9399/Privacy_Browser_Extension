@@ -284,12 +284,25 @@ class LocalPiiNer {
     }
 
     softmaxMax(data, offset, count) {
-        let max = -Infinity;
+        let maxLogit = -Infinity;
+
         for (let i = 0; i < count; i++) {
-            max = Math.max(max, Number(data[offset + i]));
+            maxLogit = Math.max(
+                maxLogit,
+                Number(data[offset + i])
+            );
         }
 
-        return max;
+        let sum = 0;
+        for (let i = 0; i < count; i++) {
+            sum += Math.exp(
+                Number(data[offset + i]) - maxLogit
+            );
+        }
+
+        return sum > 0
+            ? 1 / sum
+            : 0;
     }
 
     tokenize(text) {
