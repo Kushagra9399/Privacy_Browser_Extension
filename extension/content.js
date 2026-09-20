@@ -54,6 +54,18 @@ class PrivacyBrowserAgent {
             const visionReady =
                 await this.visionProcessor.initialize();
 
+            // The agent loop is initialized before this content agent. Attach the
+            // already initialized VisionProcessor so every observation uses the
+            // same local privacy boundary.
+            if (window.agentLoop?.sessionManager) {
+                window.agentLoop.sessionManager.visionProcessor =
+                    this.visionProcessor;
+                Logger.log(
+                    'AGENT',
+                    'Agent loop connected to local vision processor'
+                );
+            }
+
             if (
                 !visionReady &&
                 this.config.ENABLE_LOCAL_VISION
