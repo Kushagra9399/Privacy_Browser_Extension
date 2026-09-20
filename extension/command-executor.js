@@ -71,10 +71,12 @@ class CommandExecutor {
     }
 
     async executeNavigate(url) {
-        if (!url) throw new Error('Navigation URL is required');
-        window.location.assign(url);
+        const navigationUrl = url || this.pendingNavigationUrl;
+        Logger.log('EXECUTOR', 'Executing navigation', { url, resolvedUrl: navigationUrl });
+        if (!navigationUrl) throw new Error('Navigation URL is required');
+        window.location.assign(navigationUrl);
         await this.wait(500);
-        return { navigated: true, url };
+        return { navigated: true, url: navigationUrl };
     }
 
     async executeHistory(direction) {
@@ -132,14 +134,31 @@ class CommandExecutor {
 
         if (!element) throw new Error(`Element not found for click: ${JSON.stringify(command)}`);
 
+        const initialRect = element.getBoundingClientRect();
+        const initialCenterX = initialRect.left + initialRect.width / 2;
+        const initialCenterY = initialRect.top + initialRect.height / 2;
+        const outsideViewport =
+            initialCenterX < 0 ||
+            initialCenterY < 0 ||
+            initialCenterX > window.innerWidth ||
+            initialCenterY > window.innerHeight;
+
+        if (outsideViewport) {
+            element.scrollIntoView({ behavior: 'auto', block: 'center', inline: 'center' });
+            await this.wait(100);
+        }
+
         const validation = this.validateActionableElement(element, 'click');
         if (!validation.valid) {
-            Logger.warn('EXECUTOR', `Blocked click: ${validation.reason}`);
+            Logger.warn('EXECUTOR', `Blocked click: ${validation.reason}`, {
+                rect: element.getBoundingClientRect().toJSON?.() || element.getBoundingClientRect(),
+                viewport: { width: window.innerWidth, height: window.innerHeight }
+            });
             return { clicked: false, blocked: true, errorCode: validation.errorCode, reason: validation.reason };
         }
 
-        element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        await this.wait(500);
+        element.scrollIntoView({ behavior: 'auto', block: 'center', inline: 'center' });
+        await this.wait(100);
 
         const postScrollValidation = this.validateActionableElement(element, 'click');
         if (!postScrollValidation.valid) {
