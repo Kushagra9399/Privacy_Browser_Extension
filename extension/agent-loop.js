@@ -88,21 +88,21 @@ class AgentLoopOrchestrator {
         const goal = String(userGoal || '').trim().toLowerCase();
         if (!goal) return false;
 
-        const complexPatterns = [
-            /\b(compare|comparison|comparative)\b/,
-            /\b(summarize|summarise|summary)\b/,
-            /\b(recommend|recommendation|best|better|which one|which is)\b/,
-            /\b(analy[sz]e|analysis|evaluate|evaluation)\b/,
-            /\b(explain|why|reason|reasoning)\b/,
-            /\b(review|reviews|pros and cons|advantages|disadvantages)\b/,
-            /\b(multiple|several|all of|top \d+|rank|ranking)\b/,
-            /\b(extract|collect|find)\b.*\b(from|across|multiple|several|all)\b/,
-            /\b(and then|after that|then)\b.*\b(and then|after that|then)\b/
+        // The privacy architecture keeps perception local but delegates task
+        // reasoning to the backend. Therefore normal user goals are server
+        // reasoning tasks unless the goal is explicitly a local control action.
+        const localOnlyPatterns = [
+            /^(stop|pause|resume)\s+(processing|agent)$/,
+            /^(get|show)\s+(status|agent status)$/
         ];
 
-        return complexPatterns.some(pattern => pattern.test(goal));
+        if (localOnlyPatterns.some(pattern => pattern.test(goal))) {
+            return false;
+        }
+
+        return true;
     }
-    
+
     /**
      * Main agent loop
      * Runs until the goal is achieved, a safety limit is reached, or repeated
