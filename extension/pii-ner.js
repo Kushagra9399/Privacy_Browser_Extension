@@ -71,6 +71,20 @@ class LocalPiiNer {
         return true;
     }
 
+    async infer(text) {
+        if (!this.isOffscreenContext) {
+            const response = await chrome.runtime.sendMessage({
+                type: 'offscreen_pii_request',
+                text
+            });
+            if (!response?.success) {
+                throw new Error(response?.error || 'Offscreen PII inference failed');
+            }
+            return Array.isArray(response.entities) ? response.entities : [];
+        }
+        return this.detect(text);
+    }
+
     async detect(text) {
         if (!this.session || !text?.trim()) {
             return [];
