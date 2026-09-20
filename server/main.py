@@ -453,7 +453,7 @@ What is the next action you should take to accomplish the goal?
                 model=GROQ_MODEL,
                 messages=messages,
                 temperature=0.3,  # Lower temperature for reliability
-                max_tokens=500,
+                max_tokens=800,
                 response_format={"type": "json_object"}
             )
             
