@@ -125,6 +125,17 @@ class ErrorCode(str, Enum):
     MAX_STEPS_EXCEEDED = "max_steps_exceeded"
     NAVIGATION_DETECTED = "navigation_detected"
     EXECUTION_ERROR = "execution_error"
+    OUTSIDE_VIEWPORT = "outside_viewport"
+    COVERED_ELEMENT = "covered_element"
+    NON_INTERACTIVE_ELEMENT = "non_interactive_element"
+    NOT_ACTIONABLE = "not_actionable"
+    INVALID_ELEMENT = "invalid_element"
+    DETACHED_ELEMENT = "detached_element"
+    ZERO_SIZE_ELEMENT = "zero_size_element"
+    DISABLED_ELEMENT = "disabled_element"
+    ARIA_DISABLED_ELEMENT = "aria_disabled_element"
+    INERT_ELEMENT = "inert_element"
+    READONLY_ELEMENT = "readonly_element"
 
 
 # ============================================================================
