@@ -51,10 +51,7 @@ SERVER_PORT = int(os.getenv('SERVER_PORT', '8000'))
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
 CORS_ORIGINS = [
     origin.strip()
-    for origin in os.getenv(
-        'CORS_ORIGINS',
-        'http://localhost:3000'
-    ).split(',')
+    for origin in ('http://localhost:3000,https://mail.google.com,https://gmail.com,chrome-extension://*').split(',')
     if origin.strip()
 ]
 MAX_AGENT_STEPS = int(os.getenv('MAX_AGENT_STEPS', '20'))
@@ -468,7 +465,9 @@ For FAILED: Explain what couldn't be accomplished.
             )
             
             # Add to conversation history
-            # session.conversation_history.append(AgentMessage(role="user", content=user_message))
+            # session.conversation_history.append(AgentMessage(role="user", content=user_message))'
+            print("User Message")
+            print(user_message)
             messages = [
                 {"role": "system", "content": self.SYSTEM_PROMPT},
                 {"role": "user", "content": user_message}
