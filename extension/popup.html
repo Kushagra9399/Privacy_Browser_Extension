@@ -75,6 +75,23 @@
             </div>
         </section>
 
+        <section class="privacy-debug-section">
+            <h2>Backend Privacy Inspector</h2>
+            <div id="privacyDebugStatus" class="debug-status">Waiting for an outbound backend request...</div>
+            <div class="debug-summary" id="privacyDebugSummary"></div>
+            <div class="debug-preview-wrap">
+                <div>
+                    <h3>Redacted screenshot sent</h3>
+                    <img id="privacyDebugImage" class="debug-image" alt="Redacted screenshot sent to backend" />
+                </div>
+                <div>
+                    <h3>Exact JSON payload</h3>
+                    <pre id="privacyDebugJson" class="debug-json">No request captured yet.</pre>
+                </div>
+            </div>
+            <button id="clearPrivacyDebug" class="btn btn-small">Clear Inspector</button>
+        </section>
+
         <section class="privacy-stats">
             <h2>Privacy Analytics</h2>
             <div class="stat-row">
