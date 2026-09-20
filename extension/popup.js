@@ -19,6 +19,7 @@ class PopupController {
         this.listenForAgentEvents();
         this.listenForPrivacyDebug();
         this.loadPrivacyDebug();
+        this.loadLatestAgentEvent();
     }
 
     initializeUI() {
@@ -127,6 +128,25 @@ class PopupController {
                 await chrome.storage.session.remove('privacyDebugLastRequest');
                 this.renderPrivacyDebug(null);
             });
+        }
+    }
+
+    async loadLatestAgentEvent() {
+        try {
+            const data = await chrome.storage.session.get('privacyDebugLastAgentEvent');
+            const event = data.privacyDebugLastAgentEvent;
+            if (!event) return;
+
+            if (event.type === 'action_received') {
+                if (this.agentElements.reasoningText) {
+                    this.agentElements.reasoningText.textContent =
+                        event.reasoning_summary || event.reason || 'No reasoning summary provided.';
+                }
+                this.agentElements.actionText.textContent =
+                    `${event.action_type}${event.reason ? ': ' + event.reason : ''}`;
+            }
+        } catch (error) {
+            // The popup can still operate without persisted agent state.
         }
     }
 
