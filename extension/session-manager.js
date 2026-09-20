@@ -242,6 +242,7 @@ class ClientSessionManager {
         this.privacyFilter = typeof PrivacyFilter !== 'undefined'
             ? new PrivacyFilter()
             : null;
+        this.visionProcessor = null;
         this.elementRegistry = new ElementRegistry();
         this.perf = new PerformanceMonitor();
         
@@ -351,7 +352,7 @@ class ClientSessionManager {
         try {
             return await this.perf.measureAsync('OBSERVE_CYCLE', async () => {
                 // Build observation
-                const observation = this.buildObservation();
+                const observation = await this.buildObservation();
                 
                 Logger.log('SESSION', `Sending observation ${observation.observation_id}`);
                 
@@ -403,20 +404,19 @@ class ClientSessionManager {
     /**
      * Build current page observation
      */
-    buildObservation() {
+    async buildObservation() {
         const rect = document.documentElement.getBoundingClientRect();
-        
-        // Get all interactive elements
+
+        // Always build the safe DOM observation locally.
         const allElements = extractInteractiveDomElements();
         const elements = [];
-        
+
         for (const elem of allElements) {
             const agentId = this.elementRegistry.registerElement(elem);
             if (!agentId) continue;
-            
-            // Privacy check
+
             const sensitiveType = this.detectSensitive(elem);
-            
+
             elements.push({
                 agent_element_id: agentId,
                 tag: elem.tagName.toLowerCase(),
@@ -444,20 +444,49 @@ class ClientSessionManager {
                 }
             });
         }
-        
+
+        let visualContext = null;
+
+        if (this.visionProcessor) {
+            try {
+                Logger.log('SESSION', 'Running local privacy/vision pipeline before server observation');
+
+                const result = await this.visionProcessor.processScreen();
+
+                if (result) {
+                    visualContext = {
+                        screenshot: result.screenshot,
+                        redactionMask: result.redactionMask,
+                        canvas: result.features?.canvas || null,
+                        colors: result.features?.colors || null,
+                        regions: result.features?.regions || null,
+                        complexity: result.features?.complexity || null,
+                        timestamp: result.timestamp
+                    };
+
+                    Logger.log('SESSION', 'Local privacy/vision pipeline completed', {
+                        redactions: result.redactionMask?.redactions?.length || 0,
+                        screenshotSize: result.screenshot?.size || 0
+                    });
+                }
+            } catch (error) {
+                Logger.error('SESSION', 'Local privacy/vision pipeline failed; refusing to send raw visual context', error);
+            }
+        }
+
         return {
             observation_id: `obs_${uuid.v4().substring(0, 8)}`,
             page_revision: this.observationCount++,
-            url: window.location.href,
-            title: document.title,
+            url: window.location.origin + window.location.pathname,
+            title: this.sanitizeObservationText(document.title || ''),
             viewport_width: window.innerWidth,
             viewport_height: window.innerHeight,
             timestamp: new Date().toISOString(),
-            elements: elements,
-            screenshot_available: false
+            elements,
+            screenshot_available: !!visualContext?.screenshot,
+            visual_context: visualContext
         };
     }
-
     /**
      * Remove common PII patterns from observation metadata.
      * This operates entirely inside the browser.
