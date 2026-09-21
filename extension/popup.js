@@ -20,6 +20,7 @@ class PopupController {
         this.listenForPrivacyDebug();
         this.loadPrivacyDebug();
         this.loadLatestAgentEvent();
+        this.loadAgentUiState();
     }
 
     initializeUI() {
@@ -132,23 +133,155 @@ class PopupController {
     }
 
     async loadLatestAgentEvent() {
+        // Kept for compatibility with the previous persisted event key.
         try {
             const data = await chrome.storage.session.get('privacyDebugLastAgentEvent');
-            const event = data.privacyDebugLastAgentEvent;
-            if (!event) return;
-
-            if (event.type === 'action_received') {
-                if (this.agentElements.reasoningText) {
-                    this.agentElements.reasoningText.textContent =
-                        event.reasoning_summary || event.reason || 'No reasoning summary provided.';
-                }
-                this.agentElements.actionText.textContent =
-                    `${event.action_type}${event.reason ? ': ' + event.reason : ''}`;
+            if (data.privacyDebugLastAgentEvent) {
+                this.applyAgentEvent(data.privacyDebugLastAgentEvent, false);
             }
         } catch (error) {
-            // The popup can still operate without persisted agent state.
+            // Popup can still operate without persisted state.
         }
     }
+
+    async loadAgentUiState() {
+        try {
+            const response = await new Promise((resolve) => {
+                chrome.runtime.sendMessage({ type: 'get_agent_ui_state' }, resolve);
+            });
+
+            const state = response?.state;
+            if (!state) return;
+
+            this.currentSessionId = state.sessionId || null;
+            this.currentStep = Number(state.step || 0);
+            this.maxSteps = Number(state.maxSteps || 20);
+            this.agentRunning = !!state.running;
+
+            this.agentElements.userGoalInput.value = state.goal || '';
+
+            if (state.running || state.status !== 'idle') {
+                this.renderAgentState(state);
+
+                // Rebuild the visible activity history so reopening the popup
+                // does not make the agent appear to have started from scratch.
+                this.logs = [];
+                for (const event of (state.events || [])) {
+                    this.applyAgentEvent(event, false);
+                }
+            } else {
+                this.updateUIForAgentEnd();
+            }
+        } catch (error) {
+            // Background state is best-effort; never block the popup.
+        }
+    }
+
+    renderAgentState(state) {
+        this.agentElements.goalText.textContent = state.goal || '';
+        this.agentElements.stepNumber.textContent = String(state.step || 0);
+        this.agentElements.maxSteps.textContent = String(state.maxSteps || 20);
+        this.agentElements.actionText.textContent = state.action || 'Waiting for agent...';
+        this.agentElements.reasoningText.textContent =
+            state.reasoning || 'Waiting for agent reasoning...';
+        this.agentElements.errorCount.textContent = String(state.errors || 0);
+
+        const statusMap = {
+            running: ['Running', 'badge badge-running'],
+            completed: ['✓ Completed', 'badge badge-completed'],
+            stopped: ['⊘ Stopped', 'badge badge-stopped'],
+            failed: ['✗ Failed', 'badge badge-failed'],
+            idle: ['Idle', 'badge']
+        };
+        const [label, className] = statusMap[state.status] || statusMap.idle;
+        this.agentElements.statusBadge.textContent = label;
+        this.agentElements.statusBadge.className = className;
+
+        this.agentElements.userGoalSection.style.display =
+            state.running ? 'none' : 'block';
+        this.agentElements.agentStatusSection.style.display = 'block';
+        this.agentElements.startAgentBtn.disabled = !!state.running;
+        this.agentElements.stopAgentBtn.disabled = !state.running;
+        this.agentElements.errorInfoItem.style.display =
+            Number(state.errors || 0) > 0 ? 'block' : 'none';
+
+        if (state.events?.length) {
+            this.agentElements.agentLogContainer.innerHTML = '';
+        }
+    }
+
+    applyAgentEvent(event, writeLog = true) {
+        if (!event) return;
+
+        switch (event.type) {
+            case 'agent_started':
+                this.currentSessionId = event.session_id || this.currentSessionId;
+                this.agentRunning = true;
+                this.agentElements.goalText.textContent = event.goal || this.agentElements.goalText.textContent;
+                this.agentElements.maxSteps.textContent = String(event.max_steps || this.maxSteps);
+                this.agentElements.statusBadge.textContent = 'Running';
+                this.agentElements.statusBadge.className = 'badge badge-running';
+                break;
+            case 'agent_mode_selected':
+                break;
+            case 'step_started':
+                this.currentStep = event.step || this.currentStep;
+                this.agentElements.stepNumber.textContent = String(this.currentStep);
+                break;
+            case 'action_received':
+                this.agentElements.actionText.textContent =
+                    `${event.action_type || 'Action'}${event.reason ? ': ' + event.reason : ''}`;
+                this.agentElements.reasoningText.textContent =
+                    event.reasoning_summary || event.reason || 'No reasoning summary provided.';
+                break;
+            case 'action_executed':
+                this.agentElements.actionText.textContent = '✓ Executed';
+                break;
+            case 'action_failed':
+                this.agentElements.actionText.textContent = `✗ Failed: ${event.error_code || 'action error'}`;
+                this.agentElements.errorCount.textContent = String(event.error_count || 0);
+                this.agentElements.errorInfoItem.style.display = 'block';
+                break;
+            case 'agent_finished':
+                this.agentRunning = false;
+                this.agentElements.actionText.textContent = 'Completed';
+                this.agentElements.reasoningText.textContent = event.reason || this.agentElements.reasoningText.textContent;
+                break;
+            case 'agent_stopped':
+                this.agentRunning = false;
+                this.agentElements.actionText.textContent = 'Stopped';
+                break;
+            case 'agent_safety_stop':
+                this.agentRunning = false;
+                this.agentElements.actionText.textContent = 'Stopped for safety';
+                this.agentElements.reasoningText.textContent = event.message || this.agentElements.reasoningText.textContent;
+                break;
+            case 'agent_error_limit':
+                this.agentRunning = false;
+                this.agentElements.actionText.textContent = 'Error limit reached';
+                break;
+            case 'agent_ended':
+                this.agentRunning = false;
+                break;
+            case 'loop_error':
+                this.agentElements.reasoningText.textContent =
+                    event.error_message || this.agentElements.reasoningText.textContent;
+                break;
+        }
+
+        if (writeLog) {
+            if (event.type === 'step_started') {
+                this.addLog(`Step ${event.step}: Starting`, 'step', 'agent');
+            } else if (event.type === 'action_received') {
+                this.addLog(
+                    `Action: ${event.action_type}${event.reasoning_summary ? ' — ' + event.reasoning_summary : ''}`,
+                    'action',
+                    'agent'
+                );
+            }
+        }
+    }
+
 
     async loadPrivacyDebug() {
         try {
@@ -209,74 +342,33 @@ class PopupController {
      * Handle events from the agent loop
      */
     handleAgentEvent(event) {
-        switch (event.type) {
-            case 'step_started':
-                this.currentStep = event.step;
-                this.updateStepDisplay();
-                this.addLog(`Step ${event.step}: Starting`, 'step', 'agent');
-                break;
+        this.applyAgentEvent(event, true);
 
-            case 'action_received':
-                this.agentElements.actionText.textContent =
-                    `${event.action_type}${event.reason ? ': ' + event.reason : ''}`;
-                if (this.agentElements.reasoningText) {
-                    this.agentElements.reasoningText.textContent =
-                        event.reasoning_summary || event.reason || 'No reasoning summary provided.';
-                }
-                this.addLog(
-                    `Action: ${event.action_type}${event.reasoning_summary ? ' — ' + event.reasoning_summary : ''}`,
-                    'action',
-                    'agent'
-                );
-                break;
-
-            case 'action_executed':
-                this.agentElements.actionText.textContent = '✓ Executed';
-                this.addLog(`Action executed (${event.duration_ms}ms)`, 'success', 'agent');
-                break;
-
-            case 'action_failed':
-                this.agentElements.actionText.textContent = `✗ Failed: ${event.error_code}`;
-                this.agentElements.errorInfoItem.style.display = 'block';
-                this.agentElements.errorCount.textContent = event.error_count;
-                this.addLog(`Action failed: ${event.error_code}`, 'error', 'agent');
-                break;
-
-            case 'agent_finished':
-                this.agentRunning = false;
-                this.updateUIForAgentEnd();
-                this.agentElements.statusBadge.textContent = '✓ Completed';
-                this.agentElements.statusBadge.className = 'badge badge-completed';
-                this.addLog(`Agent finished: ${event.reason}`, 'success', 'agent');
-                break;
-
-            case 'agent_error_limit':
-                this.agentRunning = false;
-                this.updateUIForAgentEnd();
-                this.agentElements.statusBadge.textContent = '✗ Error limit';
-                this.agentElements.statusBadge.className = 'badge badge-failed';
-                this.addLog(`Agent stopped: ${event.message}`, 'error', 'agent');
-                break;
-
-            case 'agent_stopped':
-                this.agentRunning = false;
-                this.updateUIForAgentEnd();
-                this.agentElements.statusBadge.textContent = '⊘ Stopped';
-                this.agentElements.statusBadge.className = 'badge badge-stopped';
-                this.addLog('Agent stopped by user', 'info', 'agent');
-                break;
-
-            case 'agent_ended':
-                this.addLog(
-                    `Agent session ended (${event.steps_taken} steps, ${event.errors} errors)`,
-                    'info',
-                    'agent'
-                );
-                break;
-
-            case 'loop_error':
-                this.addLog(`Error: ${event.error_message}`, 'error', 'agent');
-                break;
+        if (event.type === 'agent_finished' ||
+            event.type === 'agent_stopped' ||
+            event.type === 'agent_safety_stop' ||
+            event.type === 'agent_error_limit' ||
+            event.type === 'agent_ended') {
+            this.agentRunning = false;
+            this.updateUIForAgentEnd();
+            this.renderAgentState({
+                ...event,
+                goal: this.agentElements.goalText.textContent,
+                step: this.currentStep,
+                maxSteps: this.maxSteps,
+                status:
+                    event.type === 'agent_finished' ? 'completed' :
+                    event.type === 'agent_error_limit' ? 'failed' : 'stopped',
+                action: this.agentElements.actionText.textContent,
+                reasoning: this.agentElements.reasoningText.textContent,
+                errors: Number(this.agentElements.errorCount.textContent || 0)
+            });
+        } else if (event.type === 'agent_started' || event.type === 'step_started' || event.type === 'action_received') {
+            this.agentRunning = true;
+            this.agentElements.userGoalSection.style.display = 'none';
+            this.agentElements.agentStatusSection.style.display = 'block';
+            this.agentElements.stopAgentBtn.disabled = false;
+            this.agentElements.startAgentBtn.disabled = true;
         }
     }
 
@@ -316,6 +408,23 @@ class PopupController {
             this.currentSessionId = response.session_id;
             this.agentRunning = true;
             this.currentStep = 0;
+
+            await new Promise((resolve) => {
+                chrome.storage.session.set({
+                    agentUiState: {
+                        running: true,
+                        sessionId: this.currentSessionId,
+                        goal: userGoal,
+                        step: 0,
+                        maxSteps: this.maxSteps,
+                        status: 'running',
+                        action: 'Initializing...',
+                        reasoning: 'Waiting for agent reasoning...',
+                        errors: 0,
+                        events: []
+                    }
+                }, resolve);
+            });
             this.agentElements.errorCount.textContent = '0';
             this.agentElements.errorInfoItem.style.display = 'none';
 
@@ -381,13 +490,13 @@ class PopupController {
      */
     updateUIForAgentEnd() {
         this.agentElements.userGoalSection.style.display = 'block';
-        this.agentElements.agentStatusSection.style.display = 'none';
-        
+        this.agentElements.agentStatusSection.style.display = 'block';
+
         this.agentElements.startAgentBtn.disabled = false;
         this.agentElements.stopAgentBtn.disabled = true;
 
-        // User can start another goal
-        this.agentElements.userGoalInput.focus();
+        // Keep the previous goal visible so reopening the popup never looks like
+        // a fresh/reset session.
     }
 
     /**
