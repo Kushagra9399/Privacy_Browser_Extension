@@ -189,6 +189,7 @@ class PageObservation(BaseModel):
     timestamp: datetime = Field(default_factory=datetime.utcnow)
     elements: List[ElementMetadata]
     screenshot_available: bool = False
+    visual_context: Optional[Dict[str, Any]] = None
     
     class Config:
         use_enum_values = True
@@ -869,6 +870,26 @@ async def observe(request: ObserveRequest):
         # Record observation
         session.add_observation(request.observation)
         session.status = SessionStatus.OBSERVING
+
+        # The extension sends the locally-redacted image inside visual_context.
+        # Save it here before the observation is passed to Groq. The raw image
+        # is never logged or sent to Groq as part of the text prompt.
+        visual_context = request.observation.visual_context or {}
+        screenshot = visual_context.get("screenshot")
+        if screenshot:
+            try:
+                saved_filename = _save_redacted_screenshot(screenshot)
+                logger.info(
+                    "[%s] Redacted screenshot reconstructed and saved: %s",
+                    session.session_id,
+                    saved_filename
+                )
+            except ValueError as exc:
+                logger.warning(
+                    "[%s] Redacted screenshot could not be saved: %s",
+                    session.session_id,
+                    exc
+                )
         
         # Check for stop conditions
         if session.should_stop():
