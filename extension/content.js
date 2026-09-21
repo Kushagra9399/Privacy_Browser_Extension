@@ -806,6 +806,14 @@ class PrivacyBrowserAgent {
                         // UNKNOWN MESSAGE
                         // ==================================================
 
+                        case 'popup_open':
+                        case 'popup_closed':
+                            // Popup lifecycle messages are consumed by the
+                            // floating UI. The content agent does not need to
+                            // treat them as agent commands.
+                            sendResponse({ success: true });
+                            return false;
+
                         default:
 
                             Logger.warn(
