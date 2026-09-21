@@ -40,6 +40,17 @@ class ExtensionManager {
                                 sendResponse({ success: false, error: error?.message || 'Offscreen PII request failed' });
                             });
                         return true;
+                    case 'capture_visible_tab':
+                        this.captureVisibleTab(sender?.tab?.windowId)
+                            .then((dataUrl) => sendResponse({ success: true, dataUrl }))
+                            .catch((error) => {
+                                Logger.error('BG', 'Visible tab capture failed', error);
+                                sendResponse({
+                                    success: false,
+                                    error: error?.message || 'Visible tab capture failed'
+                                });
+                            });
+                        return true;
                     case 'offscreen_vision_ready':
                         sendResponse({ success: true });
                         break;
@@ -117,6 +128,17 @@ class ExtensionManager {
         chrome.runtime.onInstalled.addListener(() => {
             this.handleExtensionInstalled();
         });
+    }
+
+    async captureVisibleTab(windowId) {
+        if (!chrome.tabs?.captureVisibleTab) {
+            throw new Error('chrome.tabs.captureVisibleTab is unavailable');
+        }
+
+        const options = { format: 'png' };
+        return windowId == null
+            ? await chrome.tabs.captureVisibleTab(options)
+            : await chrome.tabs.captureVisibleTab(windowId, options);
     }
 
     async ensureOffscreenDocument() {
