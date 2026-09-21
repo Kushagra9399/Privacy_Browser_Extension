@@ -63,11 +63,31 @@ class CommandExecutor {
     }
 
     async executePressKey(element, key) {
-        if (!element) throw new Error('Target element not found');
-        element.focus();
-        element.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
-        element.dispatchEvent(new KeyboardEvent('keyup', { key, bubbles: true, cancelable: true }));
-        return { pressed: true, key };
+        // press_key may intentionally omit element_id because it should act
+        // on the element that currently has keyboard focus.
+        const target = element || document.activeElement || document.body;
+        if (!target) throw new Error('No keyboard target available');
+
+        if (typeof target.focus === 'function' && target !== document.body) {
+            target.focus();
+        }
+
+        target.dispatchEvent(new KeyboardEvent('keydown', {
+            key,
+            bubbles: true,
+            cancelable: true
+        }));
+        target.dispatchEvent(new KeyboardEvent('keyup', {
+            key,
+            bubbles: true,
+            cancelable: true
+        }));
+
+        return {
+            pressed: true,
+            key,
+            target: target === document.body ? 'document.body' : target.tagName
+        };
     }
 
     async executeNavigate(url) {
