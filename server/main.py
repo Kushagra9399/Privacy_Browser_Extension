@@ -978,6 +978,40 @@ async def observe(request: ObserveRequest):
         
         action = groq_response.action
 
+        # Normalize select labels against the current observation before sending
+        # the action to the browser. The LLM may return "UK", different casing,
+        # or surrounding whitespace even when the DOM exposes "United Kingdom".
+        if action.type == ActionType.SELECT and action.element_id:
+            current_element = next(
+                (
+                    element
+                    for element in request.observation.elements
+                    if element.agent_element_id == action.element_id
+                ),
+                None
+            )
+            if current_element and current_element.available_options:
+                requested = (action.label or action.value or "").strip().lower()
+                if requested:
+                    exact_option = next(
+                        (
+                            option
+                            for option in current_element.available_options
+                            if str(option).strip().lower() == requested
+                        ),
+                        None
+                    )
+                    if exact_option:
+                        action.label = exact_option
+                        action.value = None
+                    else:
+                        logger.warning(
+                            "[%s] LLM requested unavailable select option: %s; available=%s",
+                            session.session_id,
+                            requested,
+                            current_element.available_options
+                        )
+
         # Validate element reference if needed
         if action.element_id and action.type not in [ActionType.SCROLL, ActionType.WAIT, ActionType.NAVIGATE, ActionType.FINISH]:
             # Verify element exists in current observation
