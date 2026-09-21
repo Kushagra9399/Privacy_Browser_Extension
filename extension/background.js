@@ -416,6 +416,16 @@ chrome.runtime.onMessage.addListener((message, sender) => {
                     privacyDebugLastAgentEvent: event,
                     agentUiState: next
                 });
+
+                // Broadcast live agent events back to the originating tab.
+                // The floating UI runs inside the page and must not depend on
+                // the extension popup remaining open.
+                if (sender?.tab?.id != null) {
+                    chrome.tabs.sendMessage(sender.tab.id, {
+                        type: 'agent_event',
+                        ...event
+                    }).catch(() => {});
+                }
             } catch (error) {
                 console.warn('[AGENT_UI] Failed to persist agent state', error);
             }
