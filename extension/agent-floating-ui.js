@@ -53,7 +53,8 @@
                 'width:360px',
                 'height:auto',
                 'z-index:2147483647',
-                'pointer-events:none','display:none'
+                'pointer-events:none',
+                'display:block'
             ].join(';');
 
             this.shadow = this.host.attachShadow({ mode: 'closed' });
