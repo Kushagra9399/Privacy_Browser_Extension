@@ -230,6 +230,31 @@ async function canvasToJpeg(canvas, quality = 0.7) {
 }
 
 /**
+ * Serialize the redacted screenshot as PNG so text, borders, icons and colors
+ * are not degraded by lossy JPEG compression.
+ */
+async function canvasToPng(canvas) {
+    return new Promise((resolve, reject) => {
+        canvas.toBlob((blob) => {
+            if (!blob) {
+                reject(new Error('Failed to encode redacted canvas as PNG'));
+                return;
+            }
+            const reader = new FileReader();
+            reader.onloadend = () => {
+                resolve({
+                    data: reader.result,
+                    size: blob.size,
+                    type: 'image/png'
+                });
+            };
+            reader.onerror = () => reject(new Error('Failed to read PNG blob'));
+            reader.readAsDataURL(blob);
+        }, 'image/png');
+    });
+}
+
+/**
  * Resize image for efficient processing
  */
 function resizeCanvas(canvas, maxWidth, maxHeight) {
@@ -420,6 +445,7 @@ if (typeof module !== 'undefined' && module.exports) {
         getElementInfo,
         extractPageStructure,
         canvasToJpeg,
+        canvasToPng,
         resizeCanvas,
         ServerComm
     };
