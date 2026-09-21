@@ -11,6 +11,7 @@
             this.panel = null;
             this.minimized = false;
             this.userClosed = false;
+            this.popupOpen = false;
             this.state = {
                 running: false,
                 sessionId: null,
@@ -172,11 +173,13 @@
         bindRuntimeMessages() {
             chrome.runtime.onMessage.addListener((message) => {
                 if (message?.type === 'popup_open') {
+                    this.popupOpen = true;
                     this.host.style.display = 'none';
                     return;
                 }
 
                 if (message?.type === 'popup_closed') {
+                    this.popupOpen = false;
                     if (!this.userClosed) {
                         this.host.style.display = 'block';
                     }
@@ -211,7 +214,7 @@
         }
 
         applyEvent(event) {
-            switch (event.type) {
+            switch (event.event_type || event.type) {
                 case 'agent_started':
                     this.state = {
                         ...this.state,
@@ -353,7 +356,7 @@
         }
 
         show() {
-            if (this.userClosed) return;
+            if (this.userClosed || this.popupOpen) return;
             this.host.style.display = 'block';
         }
 
