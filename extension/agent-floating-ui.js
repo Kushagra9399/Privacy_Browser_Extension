@@ -172,14 +172,14 @@
         bindRuntimeMessages() {
             chrome.runtime.onMessage.addListener((message) => {
                 if (message?.type === 'popup_open') {
-                    this.userClosed = false;
                     this.host.style.display = 'none';
                     return;
                 }
 
                 if (message?.type === 'popup_closed') {
-                    this.userClosed = false;
-                    this.host.style.display = 'block';
+                    if (!this.userClosed) {
+                        this.host.style.display = 'block';
+                    }
                     return;
                 }
 
