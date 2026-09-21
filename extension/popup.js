@@ -409,22 +409,6 @@ class PopupController {
             this.agentRunning = true;
             this.currentStep = 0;
 
-            await new Promise((resolve) => {
-                chrome.storage.session.set({
-                    agentUiState: {
-                        running: true,
-                        sessionId: this.currentSessionId,
-                        goal: userGoal,
-                        step: 0,
-                        maxSteps: this.maxSteps,
-                        status: 'running',
-                        action: 'Initializing...',
-                        reasoning: 'Waiting for agent reasoning...',
-                        errors: 0,
-                        events: []
-                    }
-                }, resolve);
-            });
             this.agentElements.errorCount.textContent = '0';
             this.agentElements.errorInfoItem.style.display = 'none';
 
