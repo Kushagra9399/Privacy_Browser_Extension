@@ -55,7 +55,7 @@
                 'width:360px',
                 'height:auto',
                 'z-index:2147483647',
-                'pointer-events:none',
+                'pointer-events:auto',
                 'display:none'
             ].join(';');
 
@@ -69,6 +69,9 @@
 
             this.shadow.append(style, this.panel);
             document.body.appendChild(this.host);
+
+            this.host.style.pointerEvents = 'auto';
+            this.panel.style.pointerEvents = 'auto';
 
             this.bindControls();
             this.applyPosition();
@@ -90,8 +93,8 @@
                             </div>
                         </div>
                         <div class="header-actions">
-                            <button class="icon-btn minimize" title="Minimize">−</button>
-                            <button class="icon-btn close" title="Close">×</button>
+                            <button class="icon-btn minimize" data-action="minimize" type="button" title="Minimize">−</button>
+                            <button class="icon-btn close" data-action="close" type="button" title="Close">×</button>
                         </div>
                     </header>
 
@@ -118,7 +121,7 @@
                     </div>
                 </section>
 
-                <button class="minimized" title="Open Privacy Browser Agent">
+                <button class="minimized" data-action="restore" type="button" title="Open Privacy Browser Agent">
                     <span class="mini-dot"></span>
                 </button>
             `;
@@ -127,24 +130,53 @@
         bindControls() {
             const $ = (selector) => this.shadow.querySelector(selector);
 
-            $('.close').addEventListener('click', (event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                this.userClosed = true;
-                this.host.style.display = 'none';
-            });
+            this.panel.addEventListener('click', (event) => {
+                const target = event.composedPath?.().find(
+                    (node) => node?.dataset?.action
+                );
 
-            $('.minimize').addEventListener('click', (event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                this.setMinimized(true);
-            });
+                if (!target) return;
 
-            $('.minimized').addEventListener('click', (event) => {
                 event.preventDefault();
                 event.stopPropagation();
-                this.setMinimized(false);
-            });
+
+                const action = target.dataset.action;
+
+                if (action === 'close') {
+                    this.userClosed = true;
+                    this.popupOpen = false;
+                    this.host.style.display = 'none';
+                    this.minimized = false;
+                    this.persistPosition();
+                    return;
+                }
+
+                if (action === 'minimize') {
+                    this.setMinimized(true);
+                    return;
+                }
+
+                if (action === 'restore') {
+                    this.userClosed = false;
+                    this.setMinimized(false);
+                    this.show();
+                }
+            }, true);
+
+            $('.close').addEventListener('pointerdown', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+            }, true);
+
+            $('.minimize').addEventListener('pointerdown', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+            }, true);
+
+            $('.minimized').addEventListener('pointerdown', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+            }, true);
 
             $('.stop').addEventListener('click', async (event) => {
                 event.preventDefault();
@@ -216,6 +248,8 @@
         applyEvent(event) {
             switch (event.event_type || event.type) {
                 case 'agent_started':
+                    this.userClosed = false;
+                    this.minimized = false;
                     this.state = {
                         ...this.state,
                         running: true,
@@ -358,6 +392,7 @@
         show() {
             if (this.userClosed || this.popupOpen) return;
             this.host.style.display = 'block';
+            this.setMinimized(this.minimized);
         }
 
         startDrag(event) {
