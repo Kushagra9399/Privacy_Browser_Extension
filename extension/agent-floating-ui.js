@@ -70,6 +70,9 @@
 
             this.bindControls();
             this.applyPosition();
+
+            // Apply the restored minimized state after the shadow DOM exists.
+            this.setMinimized(this.minimized);
             this.render();
         }
 
@@ -318,7 +321,13 @@
 
         setMinimized(value) {
             this.minimized = value;
-            this.host.classList.toggle('minimized-state', value);
+
+            const widget = this.shadow.querySelector('.widget');
+            const minimizedButton = this.shadow.querySelector('.minimized');
+
+            if (widget) widget.style.display = value ? 'none' : 'block';
+            if (minimizedButton) minimizedButton.style.display = value ? 'flex' : 'none';
+
             this.persistPosition();
         }
 
@@ -420,7 +429,6 @@
 
             if (typeof position.minimized === 'boolean') {
                 this.minimized = position.minimized;
-                this.host.classList.toggle('minimized-state', this.minimized);
             }
         }
 
