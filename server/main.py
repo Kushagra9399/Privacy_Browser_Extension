@@ -477,38 +477,23 @@ For FAILED: Explain what couldn't be accomplished.
                     f"success={result.success if result else 'pending'}"
                 )
 
-            history_text = "
-".join(recent_history) if recent_history else "none"
+            history_text = " ".join(recent_history) if recent_history else "none"
 
             user_message = (
-                f"USER GOAL: {self._clean_text(session.user_goal)}
-"
-                f"CURRENT PAGE STATE:
-{observation_text}
-"
-                f"{result_text}
-"
-                f"RECENT ACTION HISTORY:
-{history_text}
-"
-                f"DECISION RULES:
-"
-                f"- Continue the SAME task across multiple actions until the goal is complete.
-"
-                f"- A successful action is already done. Do NOT repeat the same successful action on the same target.
-"
-                f"- For a sensitive input, value_present=true means the requested data has already been entered; do not type it again.
-"
-                f"- For a select, choose the requested option using its available_options and return label or value.
-"
-                f"- After filling required fields, perform the next required action such as selecting an option or clicking Sign In.
-"
-                f"- Return FINISHED only after the user's goal is actually accomplished.
-"
+                f"USER GOAL: {self._clean_text(session.user_goal)}"
+                f"CURRENT PAGE STATE:{observation_text}"
+                f"{result_text}"
+                f"RECENT ACTION HISTORY:{history_text}"
+                f"DECISION RULES:"
+                f"- Continue the SAME task across multiple actions until the goal is complete."
+                f"- A successful action is already done. Do NOT repeat the same successful action on the same target."
+                f"- For a sensitive input, value_present=true means the requested data has already been entered; do not type it again."
+                f"- For a select, choose the requested option using its available_options and return label or value."
+                f"- After filling required fields, perform the next required action such as selecting an option or clicking Sign In."
+                f"- Return FINISHED only after the user's goal is actually accomplished."
                 f"What is the next action?"
             )
-            user_message = "
-".join(
+            user_message = "".join(
                 line.strip()
                 for line in user_message.splitlines()
                 if line.strip()
@@ -604,8 +589,7 @@ For FAILED: Explain what couldn't be accomplished.
                     )
             lines.append("- " + " | ".join(parts))
 
-        return "
-".join(lines)
+        return " ".join(lines)
 
 # ============================================================================
 # PRIVACY PROTECTION
