@@ -442,6 +442,17 @@ class ClientSessionManager {
                 interactive: true,
                 sensitive: !!sensitiveType,
                 sensitive_type: sensitiveType,
+                value_present: ['INPUT', 'TEXTAREA', 'SELECT'].includes(elem.tagName)
+                    ? (elem.tagName === 'SELECT'
+                        ? !!elem.value
+                        : !!elem.value)
+                    : false,
+                selected_option: elem.tagName === 'SELECT'
+                    ? (elem.options[elem.selectedIndex]?.textContent?.trim() || null)
+                    : null,
+                available_options: elem.tagName === 'SELECT'
+                    ? Array.from(elem.options).map(option => option.textContent?.trim()).filter(Boolean).slice(0, 50)
+                    : null,
                 bbox: {
                     x: elem.getBoundingClientRect().left,
                     y: elem.getBoundingClientRect().top,
