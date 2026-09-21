@@ -10,6 +10,7 @@
             this.shadow = null;
             this.panel = null;
             this.minimized = false;
+            this.userClosed = false;
             this.state = {
                 running: false,
                 sessionId: null,
@@ -89,6 +90,7 @@
                         </div>
                         <div class="header-actions">
                             <button class="icon-btn minimize" title="Minimize">−</button>
+                            <button class="icon-btn close" title="Close">×</button>
                         </div>
                     </header>
 
@@ -123,6 +125,13 @@
 
         bindControls() {
             const $ = (selector) => this.shadow.querySelector(selector);
+
+            $('.close').addEventListener('click', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                this.userClosed = true;
+                this.host.style.display = 'none';
+            });
 
             $('.minimize').addEventListener('click', (event) => {
                 event.preventDefault();
@@ -162,6 +171,18 @@
 
         bindRuntimeMessages() {
             chrome.runtime.onMessage.addListener((message) => {
+                if (message?.type === 'popup_open') {
+                    this.userClosed = false;
+                    this.host.style.display = 'none';
+                    return;
+                }
+
+                if (message?.type === 'popup_closed') {
+                    this.userClosed = false;
+                    this.host.style.display = 'block';
+                    return;
+                }
+
                 if (message?.type !== 'agent_event') return;
                 this.applyEvent(message);
             });
@@ -332,6 +353,7 @@
         }
 
         show() {
+            if (this.userClosed) return;
             this.host.style.display = 'block';
         }
 
@@ -477,13 +499,14 @@
                 .status-dot.failed, .mini-dot.failed { background: #dc2626; }
                 .title { font-weight: 700; font-size: 13px; line-height: 17px; }
                 .subtitle { color: #6b7280; font-size: 11px; line-height: 14px; }
-                .header-actions { display: flex; }
+                .header-actions { display: flex; gap: 2px; }
                 button { font: inherit; }
                 .icon-btn {
                     width: 30px; height: 30px; border: 0; border-radius: 8px;
                     background: transparent; cursor: pointer; font-size: 20px; color: #4b5563;
                 }
                 .icon-btn:hover { background: #f3f4f6; }
+                .icon-btn.close { font-size: 19px; }
                 .body { padding: 12px; }
                 .goal {
                     padding: 9px 10px;
