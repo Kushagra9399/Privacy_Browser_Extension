@@ -455,8 +455,8 @@ chrome.runtime.onMessage.addListener((message, sender) => {
                 // the extension popup remaining open.
                 if (sender?.tab?.id != null) {
                     chrome.tabs.sendMessage(sender.tab.id, {
-                        type: 'agent_event',
-                        ...event
+                        ...event,
+                        type: 'agent_event'
                     }).catch(() => {});
                 }
 
