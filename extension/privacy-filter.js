@@ -391,37 +391,29 @@ class PrivacyFilter {
      * Apply blur effect to the existing pixels in the redaction area
      */
     applyBlur(ctx, x, y, width, height) {
-        if (width <= 0 || height <= 0) {
-            return;
-        }
+        if (width <= 0 || height <= 0) return;
 
-        const imageData = ctx.getImageData(
-            x,
-            y,
-            width,
-            height
-        );
-
+        // Use a separate canvas as the filtered source. Drawing a canvas onto
+        // itself with ctx.filter is unreliable and can leave PII readable.
         const blurCanvas = document.createElement('canvas');
-        blurCanvas.width = width;
-        blurCanvas.height = height;
+        blurCanvas.width = Math.ceil(width);
+        blurCanvas.height = Math.ceil(height);
 
         const blurCtx = blurCanvas.getContext('2d');
-        if (!blurCtx) {
-            return;
-        }
+        if (!blurCtx) return;
 
-        blurCtx.putImageData(imageData, 0, 0);
         blurCtx.filter = `blur(${this.config.blurRadius}px)`;
-        blurCtx.drawImage(blurCanvas, 0, 0);
+        blurCtx.drawImage(
+            ctx.canvas,
+            x, y, width, height,
+            0, 0, blurCanvas.width, blurCanvas.height
+        );
         blurCtx.filter = 'none';
 
         ctx.drawImage(
             blurCanvas,
-            x,
-            y,
-            width,
-            height
+            0, 0, blurCanvas.width, blurCanvas.height,
+            x, y, width, height
         );
     }
 
