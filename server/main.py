@@ -172,6 +172,9 @@ class ElementMetadata(BaseModel):
     interactive: bool = False
     sensitive: bool = False
     sensitive_type: Optional[str] = None  # "password", "email", "credit_card", etc.
+    value_present: bool = False  # Safe state only; never contains the actual value
+    selected_option: Optional[str] = None  # Non-sensitive select label
+    available_options: Optional[List[str]] = None  # Non-sensitive select labels
     bbox: BoundingBox
     
     class Config:
@@ -201,6 +204,8 @@ class Action(BaseModel):
     type: ActionType
     element_id: Optional[str] = None  # Must match an agent_element_id from observation
     text: Optional[str] = None  # For TYPE action
+    value: Optional[str] = None  # For SELECT; never use for sensitive fields
+    label: Optional[str] = None  # For SELECT; preferred human-readable option label
     direction: Optional[str] = None  # For SCROLL: "up", "down", "left", "right"
     amount: Optional[int] = None  # For SCROLL: pixels
     duration_ms: Optional[int] = None  # For WAIT: milliseconds
@@ -392,7 +397,7 @@ SUPPORTED ACTION TYPES:
 - type: Type text into a focused input (never passwords from server)
 - clear: Clear an input field
 - focus: Focus an element
-- select: Select option in dropdown (provide text or value)
+- select: Select an option in a dropdown. ALWAYS provide "label" (or "value") for the requested option.
 - scroll: Scroll page (direction: up/down/left/right, amount in pixels)
 - press_key: Press keyboard key (Enter, Tab, Escape, etc.)
 - hover: Hover over element
@@ -411,6 +416,8 @@ Always respond with valid JSON matching this format:
         "type": "ACTION_TYPE",
         "element_id": "agent-el-123" (if needed),
         "text": "..." (for TYPE),
+        "value": "..." (for SELECT when needed),
+        "label": "..." (for SELECT; preferred),
         "direction": "..." (for SCROLL),
         "amount": 500 (for SCROLL),
         "reason": "Why this action"
@@ -432,8 +439,7 @@ For FAILED: Explain what couldn't be accomplished.
         observation: PageObservation,
         action_result: Optional[ActionResult] = None
     ) -> GroqResponse:
-        """Reason about next action using Groq"""
-        
+        """Reason about the next action using the current state and recent history."""
         if not self.client:
             self.logger.error("Groq client not initialized")
             return GroqResponse(
@@ -441,52 +447,89 @@ For FAILED: Explain what couldn't be accomplished.
                 reasoning_summary="Groq API not configured",
                 message="Groq API key is not set in environment"
             )
-        
+
         try:
-            # Build compact observation text for LLM.
             observation_text = self._format_observation(observation)
-            
-            # Build previous result without multiline whitespace.
+
             result_text = ""
             if action_result:
-                previous_action = session.action_history[-1].type if session.action_history else "unknown"
+                previous_action = session.action_history[-1] if session.action_history else None
+                previous_name = previous_action.type if previous_action else "unknown"
+                previous_target = previous_action.element_id if previous_action else "none"
                 result_text = (
-                    f"PREVIOUS ACTION RESULT: Action={previous_action} | "
+                    f"PREVIOUS ACTION RESULT: Action={previous_name} | "
+                    f"Target={previous_target} | "
                     f"Success={action_result.success} | "
                     f"Error={self._clean_text(action_result.error_message or 'none')}"
                 )
 
+            recent_history = []
+            start = max(0, len(session.action_history) - 6)
+            for index in range(start, len(session.action_history)):
+                action = session.action_history[index]
+                result = (
+                    session.action_results[index]
+                    if index < len(session.action_results)
+                    else None
+                )
+                recent_history.append(
+                    f"{index + 1}. {action.type} target={action.element_id or '-'} "
+                    f"success={result.success if result else 'pending'}"
+                )
+
+            history_text = "
+".join(recent_history) if recent_history else "none"
+
             user_message = (
-                f"USER GOAL: {self._clean_text(session.user_goal)}\n"
-                f"CURRENT PAGE STATE:\n{observation_text}\n"
-                f"{result_text}\n"
-                f"HISTORY: {len(session.action_history)} actions taken so far.\n"
-                f"What is the next action you should take to accomplish the goal?"
+                f"USER GOAL: {self._clean_text(session.user_goal)}
+"
+                f"CURRENT PAGE STATE:
+{observation_text}
+"
+                f"{result_text}
+"
+                f"RECENT ACTION HISTORY:
+{history_text}
+"
+                f"DECISION RULES:
+"
+                f"- Continue the SAME task across multiple actions until the goal is complete.
+"
+                f"- A successful action is already done. Do NOT repeat the same successful action on the same target.
+"
+                f"- For a sensitive input, value_present=true means the requested data has already been entered; do not type it again.
+"
+                f"- For a select, choose the requested option using its available_options and return label or value.
+"
+                f"- After filling required fields, perform the next required action such as selecting an option or clicking Sign In.
+"
+                f"- Return FINISHED only after the user's goal is actually accomplished.
+"
+                f"What is the next action?"
             )
-            user_message = "\n".join(
+            user_message = "
+".join(
                 line.strip()
                 for line in user_message.splitlines()
                 if line.strip()
             )
-            
-            # Add to conversation history
-            # session.conversation_history.append(AgentMessage(role="user", content=user_message))'
+
             print("User Message")
             print(user_message)
+
             messages = [
                 {"role": "system", "content": self.SYSTEM_PROMPT},
                 {"role": "user", "content": user_message}
             ]
-            # Call Groq API
+
             response = self.client.chat.completions.create(
                 model=GROQ_MODEL,
                 messages=messages,
-                temperature=0.3,  # Lower temperature for reliability
+                temperature=0.15,
                 max_tokens=800,
                 response_format={"type": "json_object"}
             )
-            
-            # Parse response
+
             response_text = response.choices[0].message.content
             response_json = json.loads(response_text)
             logger.debug(
@@ -495,16 +538,13 @@ For FAILED: Explain what couldn't be accomplished.
                 response_json.get("status"),
                 (response_json.get("action") or {}).get("type")
             )
-            # Validate response
+
             groq_response = GroqResponse(**response_json)
-            
-            # Add to conversation history
-            # session.conversation_history.append(AgentMessage(role="assistant", content=response_text))
-            
-            self.logger.info(f"[{session.session_id}] Groq reasoning: {groq_response.reasoning_summary}")
-            
+            self.logger.info(
+                f"[{session.session_id}] Groq reasoning: {groq_response.reasoning_summary}"
+            )
             return groq_response
-        
+
         except json.JSONDecodeError as e:
             self.logger.error(f"Failed to parse Groq JSON response: {e}")
             return GroqResponse(
@@ -519,16 +559,9 @@ For FAILED: Explain what couldn't be accomplished.
                 reasoning_summary="Groq API error",
                 message=f"Error: {str(e)}"
             )
-    
-    @staticmethod
-    def _clean_text(value: Any, limit: int = 160) -> str:
-        """Collapse all frontend whitespace into single spaces."""
-        if value is None:
-            return ""
-        return " ".join(str(value).split())[:limit]
 
     def _format_observation(self, observation: PageObservation) -> str:
-        """Format a compact observation with one line per interactive element."""
+        """Format current interactive state without exposing sensitive values."""
         lines = [
             f"URL: {self._clean_text(observation.url)}",
             f"TITLE: {self._clean_text(observation.title)}",
@@ -559,9 +592,20 @@ For FAILED: Explain what couldn't be accomplished.
                 parts.append(f"ARIA=\"{self._clean_text(elem.aria_label, 60)}\"")
             if elem.sensitive:
                 parts.append(f"SENSITIVE={self._clean_text(elem.sensitive_type or 'unknown', 30)}")
+                parts.append(f"VALUE_PRESENT={elem.value_present}")
+            if elem.tag.lower() == "select":
+                parts.append(f"SELECTED=\"{self._clean_text(elem.selected_option or 'none', 80)}\"")
+                options = elem.available_options or []
+                if options:
+                    parts.append(
+                        "OPTIONS=\"" +
+                        self._clean_text(", ".join(options), 300) +
+                        "\""
+                    )
             lines.append("- " + " | ".join(parts))
 
-        return "\n".join(lines)
+        return "
+".join(lines)
 
 # ============================================================================
 # PRIVACY PROTECTION
