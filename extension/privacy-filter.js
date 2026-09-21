@@ -13,7 +13,7 @@ class PrivacyFilter {
             detectFaces: true,
             detectSSN: true,
             detectSensitiveInputs: true,
-            redactionMode: 'blur', // 'blur', 'black', 'semantic'
+            redactionMode: 'black', // 'blur', 'black', 'semantic'
             blurRadius: 15,
             ...config
         };

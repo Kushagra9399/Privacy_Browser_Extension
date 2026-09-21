@@ -618,7 +618,7 @@ class PopupController {
         chrome.storage.sync.get({
             SERVER_URL: 'http://localhost:8000',
             ENABLE_REDACTION: true,
-            REDACTION_MODE: 'blur'
+            REDACTION_MODE: 'black'
         }, (items) => {
             this.legacyElements.serverUrl.value = items.SERVER_URL;
             this.legacyElements.enableRedaction.checked = items.ENABLE_REDACTION;
