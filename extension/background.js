@@ -349,7 +349,7 @@ chrome.runtime.onMessage.addListener((message, sender) => {
         return;
     }
 
-    if (message?.type === 'agent_event') {
+    if (message?.type === 'agent_event' && message.event_type) {
         agentUiStateWriteChain = agentUiStateWriteChain.then(async () => {
             try {
                 const data = await chrome.storage.session.get('agentUiState');
@@ -368,6 +368,7 @@ chrome.runtime.onMessage.addListener((message, sender) => {
 
                 const event = {
                     ...message,
+                    type: message.event_type,
                     timestamp: message.timestamp || new Date().toISOString()
                 };
 
