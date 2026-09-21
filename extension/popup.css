@@ -372,3 +372,156 @@ footer a:hover {
     white-space: normal;
     overflow-wrap: anywhere;
 }
+
+
+/* Agent run dashboard */
+.agent-status-section {
+    position: relative;
+    overflow: hidden;
+    border: 1px solid #e5e7eb;
+}
+
+.agent-status-section::before {
+    content: "";
+    display: block;
+    height: 4px;
+    margin: -15px -15px 14px;
+    background: linear-gradient(90deg, #667eea, #764ba2);
+}
+
+.goal-display {
+    max-width: 68%;
+    color: #111827;
+    font-weight: 600;
+    text-align: right;
+    overflow-wrap: anywhere;
+}
+
+.action-display {
+    max-width: 68%;
+    color: #374151;
+    text-align: right;
+    overflow-wrap: anywhere;
+}
+
+.reasoning-item {
+    display: block;
+    background: #f8f7ff;
+    border: 1px solid #e4e0ff;
+    border-radius: 8px;
+    padding: 11px;
+    margin: 8px 0;
+}
+
+.reasoning-item label {
+    display: block;
+    margin-bottom: 6px;
+    color: #5b4bb7;
+}
+
+.reasoning-display {
+    display: block;
+    color: #374151;
+    background: white;
+    border-radius: 6px;
+    padding: 9px;
+    min-height: 42px;
+    max-height: 110px;
+    overflow-y: auto;
+    line-height: 1.5;
+}
+
+.badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 9px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 700;
+    background: #e5e7eb;
+    color: #374151;
+}
+
+.badge-running {
+    background: #dcfce7;
+    color: #166534;
+}
+
+.badge-completed {
+    background: #dbeafe;
+    color: #1d4ed8;
+}
+
+.badge-failed {
+    background: #fee2e2;
+    color: #b91c1c;
+}
+
+.badge-stopped {
+    background: #fef3c7;
+    color: #92400e;
+}
+
+.agent-log-container {
+    max-height: 180px;
+    overflow-y: auto;
+    margin-top: 12px;
+    padding: 9px;
+    background: #111827;
+    border-radius: 7px;
+}
+
+.agent-log-container .log-entry {
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+    padding: 6px 0;
+}
+
+.agent-log-container .log-time {
+    color: #9ca3af;
+    margin-right: 7px;
+}
+
+.agent-log-container .log-msg {
+    color: #e5e7eb;
+}
+
+.goal-input {
+    width: 100%;
+    resize: vertical;
+    min-height: 78px;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    padding: 11px;
+    font: inherit;
+    line-height: 1.45;
+    outline: none;
+}
+
+.goal-input:focus {
+    border-color: #667eea;
+    box-shadow: 0 0 0 3px rgba(102,126,234,0.15);
+}
+
+.button-group {
+    display: flex;
+    gap: 8px;
+    margin-top: 10px;
+}
+
+@media (max-width: 520px) {
+    body {
+        width: 100%;
+    }
+
+    .goal-display,
+    .action-display {
+        max-width: 100%;
+        text-align: left;
+        margin-top: 4px;
+    }
+
+    .button-group {
+        flex-direction: column;
+    }
+}
