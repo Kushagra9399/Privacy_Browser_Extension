@@ -51,7 +51,7 @@ SERVER_PORT = int(os.getenv('SERVER_PORT', '8000'))
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
 CORS_ORIGINS = [
     origin.strip()
-    for origin in ('http://localhost:3000,https://mail.google.com,https://gmail.com,chrome-extension://*').split(',')
+    for origin in ('http://localhost:3000,https://mail.google.com,https://gmail.com').split(',')
     if origin.strip()
 ]
 MAX_AGENT_STEPS = int(os.getenv('MAX_AGENT_STEPS', '20'))
@@ -653,7 +653,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
-    allow_origin_regex=r"^(https?|chrome-extension|moz-extension)://.*$", 
+    allow_origin_regex=r"^(chrome-extension|moz-extension)://[a-z0-9]+$",
     allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization"],
