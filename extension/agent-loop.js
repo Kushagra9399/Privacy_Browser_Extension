@@ -595,8 +595,9 @@ class AgentLoopOrchestrator {
     notifyPopup(event) {
         try {
             chrome.runtime.sendMessage({
+                ...event,
                 type: 'agent_event',
-                ...event
+                event_type: event.type
             }).catch((err) => {
                 // Popup might not be open, that's OK
                 Logger.debug('LOOP', 'Popup message failed', err?.message);
