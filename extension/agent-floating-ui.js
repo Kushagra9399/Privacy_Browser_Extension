@@ -53,7 +53,7 @@
                 'width:360px',
                 'height:auto',
                 'z-index:2147483647',
-                'pointer-events:none'
+                'pointer-events:none','display:none'
             ].join(';');
 
             this.shadow = this.host.attachShadow({ mode: 'closed' });
@@ -140,10 +140,11 @@
                 $('.stop').textContent = 'Stopping...';
 
                 try {
-                    await chrome.runtime.sendMessage({
-                        type: 'stop_agent_session',
-                        session_id: this.state.sessionId
-                    });
+                    if (window.agentLoop && typeof window.agentLoop.stop === 'function') {
+                        await window.agentLoop.stop();
+                    } else {
+                        throw new Error('Agent loop is not available');
+                    }
                 } catch (error) {
                     console.warn('[AGENT_UI] Failed to stop agent', error);
                     $('.stop').disabled = false;
@@ -175,7 +176,7 @@
                     };
                     this.render();
 
-                    if (this.state.running) {
+                    if (this.state.running || (this.state.goal && this.state.status !== 'idle')) {
                         this.show();
                     }
                 }
@@ -531,8 +532,8 @@
                     justify-content: center;
                 }
                 .minimized .mini-dot { width: 13px; height: 13px; }
-                :host-context(*) .minimized-state .widget { display: none; }
-                :host-context(*) .minimized-state .minimized { display: flex; }
+                :host(.minimized-state) .widget { display: none; }
+                :host(.minimized-state) .minimized { display: flex; }
             `;
         }
     }
