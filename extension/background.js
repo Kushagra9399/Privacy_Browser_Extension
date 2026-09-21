@@ -43,6 +43,16 @@ class ExtensionManager {
                     case 'offscreen_vision_ready':
                         sendResponse({ success: true });
                         break;
+                    case 'get_agent_ui_state':
+                        this.getAgentUiState()
+                            .then((state) => sendResponse({ success: true, state }))
+                            .catch((error) => sendResponse({ success: false, error: error?.message || 'Failed to load agent state' }));
+                        return true;
+                    case 'clear_agent_ui_state':
+                        this.clearAgentUiState()
+                            .then(() => sendResponse({ success: true }))
+                            .catch((error) => sendResponse({ success: false, error: error?.message || 'Failed to clear agent state' }));
+                        return true;
                     default:
                         sendResponse({ success: true });
                 }
@@ -159,6 +169,26 @@ class ExtensionManager {
 
             port.postMessage(request);
         });
+    }
+
+    async getAgentUiState() {
+        const data = await chrome.storage.session.get('agentUiState');
+        return data.agentUiState || {
+            running: false,
+            sessionId: null,
+            goal: '',
+            step: 0,
+            maxSteps: 20,
+            status: 'idle',
+            action: 'Waiting for agent...',
+            reasoning: 'Start an agent task to see its reasoning here.',
+            errors: 0,
+            events: []
+        };
+    }
+
+    async clearAgentUiState() {
+        await chrome.storage.session.remove('agentUiState');
     }
 
     handleContentReady(tab, frameId) {
@@ -285,11 +315,107 @@ chrome.runtime.onMessage.addListener((message, sender) => {
     }
 
     if (message?.type === 'agent_event') {
-        chrome.storage.session.set({
-            privacyDebugLastAgentEvent: {
-                ...message,
-                timestamp: new Date().toISOString()
+        (async () => {
+            try {
+                const data = await chrome.storage.session.get('agentUiState');
+                const previous = data.agentUiState || {
+                    running: false,
+                    sessionId: null,
+                    goal: '',
+                    step: 0,
+                    maxSteps: 20,
+                    status: 'idle',
+                    action: 'Waiting for agent...',
+                    reasoning: 'Start an agent task to see its reasoning here.',
+                    errors: 0,
+                    events: []
+                };
+
+                const event = {
+                    ...message,
+                    timestamp: message.timestamp || new Date().toISOString()
+                };
+
+                const next = {
+                    ...previous,
+                    events: [...(previous.events || []), event].slice(-100)
+                };
+
+                switch (message.type) {
+                    case 'agent_started':
+                        next.running = true;
+                        next.status = 'running';
+                        next.sessionId = message.session_id || next.sessionId;
+                        next.goal = message.goal || next.goal;
+                        next.step = 0;
+                        next.maxSteps = message.max_steps || 20;
+                        next.action = 'Initializing...';
+                        next.reasoning = 'Waiting for agent reasoning...';
+                        next.errors = 0;
+                        break;
+                    case 'agent_mode_selected':
+                        next.mode = message.mode;
+                        break;
+                    case 'step_started':
+                        next.running = true;
+                        next.status = 'running';
+                        next.step = message.step || next.step;
+                        next.maxSteps = message.max_steps || next.maxSteps;
+                        break;
+                    case 'action_received':
+                        next.running = true;
+                        next.status = 'running';
+                        next.action = message.action_type || next.action;
+                        next.reasoning = message.reasoning_summary || message.reason || next.reasoning;
+                        break;
+                    case 'action_failed':
+                        next.running = true;
+                        next.status = 'running';
+                        next.errors = message.error_count ?? next.errors;
+                        next.action = `Failed: ${message.error_code || 'action error'}`;
+                        break;
+                    case 'action_executed':
+                        next.action = 'Executed';
+                        break;
+                    case 'agent_finished':
+                        next.running = false;
+                        next.status = 'completed';
+                        next.action = 'Completed';
+                        next.reasoning = message.reason || next.reasoning;
+                        break;
+                    case 'agent_stopped':
+                        next.running = false;
+                        next.status = 'stopped';
+                        next.action = 'Stopped';
+                        break;
+                    case 'agent_safety_stop':
+                        next.running = false;
+                        next.status = 'stopped';
+                        next.action = 'Stopped for safety';
+                        next.reasoning = message.message || next.reasoning;
+                        break;
+                    case 'agent_error_limit':
+                        next.running = false;
+                        next.status = 'failed';
+                        next.action = 'Error limit reached';
+                        break;
+                    case 'agent_ended':
+                        next.running = false;
+                        if (next.status === 'running') next.status = 'completed';
+                        break;
+                    case 'loop_error':
+                        next.errors = Math.max(next.errors || 0, 1);
+                        next.reasoning = message.error_message || next.reasoning;
+                        break;
+                }
+
+                await chrome.storage.session.set({
+                    privacyDebugLastAgentEvent: event,
+                    agentUiState: next
+                });
+            } catch (error) {
+                console.warn('[AGENT_UI] Failed to persist agent state', error);
             }
-        }).catch(() => {});
+        })();
     }
 });
