@@ -298,6 +298,9 @@ setInterval(() => {
 Logger.log('BG', 'Background service worker started');
 
 
+// Serialize agent UI state writes so rapid events cannot overwrite each other.
+let agentUiStateWriteChain = Promise.resolve();
+
 // Privacy debug bridge
 chrome.runtime.onMessage.addListener((message, sender) => {
     if (message?.type === 'privacy_debug_capture' && message.record) {
@@ -315,7 +318,7 @@ chrome.runtime.onMessage.addListener((message, sender) => {
     }
 
     if (message?.type === 'agent_event') {
-        (async () => {
+        agentUiStateWriteChain = agentUiStateWriteChain.then(async () => {
             try {
                 const data = await chrome.storage.session.get('agentUiState');
                 const previous = data.agentUiState || {
@@ -416,6 +419,6 @@ chrome.runtime.onMessage.addListener((message, sender) => {
             } catch (error) {
                 console.warn('[AGENT_UI] Failed to persist agent state', error);
             }
-        })();
+        });
     }
 });
