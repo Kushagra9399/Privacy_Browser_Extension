@@ -12,6 +12,8 @@ class PopupController {
         this.maxSteps = 20;
         this.logs = [];
         this.maxLogs = 100;
+        this.startRequested = false;
+        this.agentStateHydrated = false;
 
         this.initializeUI();
         this.loadConfiguration();
@@ -146,6 +148,9 @@ class PopupController {
 
     async loadAgentUiState() {
         try {
+            // Do not let the initial async state restore overwrite a run that
+            // the user started while the popup was initializing.
+            if (this.startRequested || this.agentRunning) return;
             const response = await new Promise((resolve) => {
                 chrome.runtime.sendMessage({ type: 'get_agent_ui_state' }, resolve);
             });
@@ -159,6 +164,10 @@ class PopupController {
             this.agentRunning = !!state.running;
 
             this.agentElements.userGoalInput.value = state.goal || '';
+
+            this.agentStateHydrated = true;
+
+            if (this.startRequested || this.agentRunning) return;
 
             if (state.running || state.status !== 'idle') {
                 this.renderAgentState(state);
@@ -215,6 +224,9 @@ class PopupController {
 
         switch (event.type) {
             case 'agent_started':
+                this.agentRunning = true;
+                this.agentElements.userGoalSection.style.display = 'none';
+                this.agentElements.agentStatusSection.style.display = 'block';
                 this.currentSessionId = event.session_id || this.currentSessionId;
                 this.agentRunning = true;
                 this.agentElements.goalText.textContent = event.goal || this.agentElements.goalText.textContent;
@@ -407,6 +419,7 @@ class PopupController {
 
             this.currentSessionId = response.session_id;
             this.agentRunning = true;
+            this.startRequested = true;
             this.currentStep = 0;
 
             this.agentElements.errorCount.textContent = '0';
@@ -418,6 +431,7 @@ class PopupController {
             this.addLog(`Session created: ${this.currentSessionId}`, 'success', 'agent');
 
         } catch (error) {
+            this.startRequested = false;
             alert(`Failed to start agent: ${error.message}`);
             this.addLog(`Error: ${error.message}`, 'error', 'agent');
         }
