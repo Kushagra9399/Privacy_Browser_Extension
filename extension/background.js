@@ -63,6 +63,37 @@ class ExtensionManager {
         });
 
         chrome.runtime.onConnect.addListener((port) => {
+            if (port.name === 'privacy-browser-popup') {
+                let popupTabId = null;
+
+                port.onMessage.addListener((message) => {
+                    if (message?.type !== 'popup_open' || !Number.isInteger(message.tabId)) {
+                        return;
+                    }
+
+                    popupTabId = message.tabId;
+                    popupPorts.set(popupTabId, port);
+
+                    chrome.tabs.sendMessage(popupTabId, {
+                        type: 'popup_open'
+                    }).catch(() => {});
+                });
+
+                port.onDisconnect.addListener(() => {
+                    if (popupTabId == null) return;
+
+                    if (popupPorts.get(popupTabId) === port) {
+                        popupPorts.delete(popupTabId);
+                    }
+
+                    chrome.tabs.sendMessage(popupTabId, {
+                        type: 'popup_closed'
+                    }).catch(() => {});
+                });
+
+                return;
+            }
+
             if (port.name !== 'privacy-browser-offscreen-ai') {
                 return;
             }
@@ -300,6 +331,7 @@ Logger.log('BG', 'Background service worker started');
 
 // Serialize agent UI state writes so rapid events cannot overwrite each other.
 let agentUiStateWriteChain = Promise.resolve();
+const popupPorts = new Map();
 
 // Privacy debug bridge
 chrome.runtime.onMessage.addListener((message, sender) => {
