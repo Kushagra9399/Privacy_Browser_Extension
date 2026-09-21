@@ -58,6 +58,9 @@ MAX_AGENT_STEPS = int(os.getenv('MAX_AGENT_STEPS', '20'))
 ACTION_TIMEOUT = int(os.getenv('ACTION_TIMEOUT', '30000'))  # ms
 AGENT_TIMEOUT = int(os.getenv('AGENT_TIMEOUT', '60000'))   # ms
 MIN_REDACTION_COVERAGE = float(os.getenv('MIN_REDACTION_COVERAGE', '0.8'))
+MAX_SAVED_SCREENSHOT_BYTES = int(os.getenv('MAX_SAVED_SCREENSHOT_BYTES', str(10 * 1024 * 1024)))
+SAVED_SCREENSHOT_DIR = os.path.join(os.path.dirname(__file__), 'saved_images')
+os.makedirs(SAVED_SCREENSHOT_DIR, exist_ok=True)
 
 # Setup logging
 logging.basicConfig(
@@ -701,6 +704,98 @@ class GetActionResponse(BaseModel):
 # ============================================================================
 # API ENDPOINTS
 # ============================================================================
+
+class ProcessScreenRequest(BaseModel):
+    """Redacted screenshot payload from the browser extension."""
+    screenshot: Any
+    pageStructure: Optional[Dict[str, Any]] = None
+    redactionMask: Optional[Dict[str, Any]] = None
+    sessionId: Optional[str] = None
+
+
+def _extract_screenshot_base64(screenshot: Any) -> tuple[str, str]:
+    """Extract a data URL/raw Base64 string from the extension screenshot payload."""
+    if isinstance(screenshot, dict):
+        screenshot = screenshot.get("data")
+
+    if not isinstance(screenshot, str) or not screenshot.strip():
+        raise ValueError("Screenshot data is missing")
+
+    value = screenshot.strip()
+    match = re.match(r"^data:(image/(?:jpeg|jpg|png|webp));base64,(.+)$", value, re.IGNORECASE | re.DOTALL)
+    if match:
+        return match.group(1).lower(), match.group(2)
+
+    return "image/jpeg", value
+
+
+def _save_redacted_screenshot(screenshot: Any) -> str:
+    """Decode and save a redacted screenshot without logging its contents."""
+    mime_type, encoded = _extract_screenshot_base64(screenshot)
+
+    try:
+        image_bytes = base64.b64decode(encoded, validate=True)
+    except Exception as exc:
+        raise ValueError("Invalid Base64 screenshot data") from exc
+
+    if not image_bytes:
+        raise ValueError("Decoded screenshot is empty")
+
+    if len(image_bytes) > MAX_SAVED_SCREENSHOT_BYTES:
+        raise ValueError("Screenshot exceeds the configured size limit")
+
+    try:
+        image = Image.open(BytesIO(image_bytes))
+        image.verify()
+        image_format = (image.format or "").upper()
+    except Exception as exc:
+        raise ValueError("Decoded data is not a valid image") from exc
+
+    extension = {
+        "JPEG": ".jpg",
+        "PNG": ".png",
+        "WEBP": ".webp",
+    }.get(image_format)
+
+    if extension is None:
+        raise ValueError("Unsupported screenshot image format")
+
+    filename = f"redacted_{uuid.uuid4().hex}{extension}"
+    output_path = os.path.join(SAVED_SCREENSHOT_DIR, filename)
+
+    with open(output_path, "wb") as output_file:
+        output_file.write(image_bytes)
+
+    logger.info(
+        "Saved redacted screenshot: filename=%s mime=%s bytes=%d",
+        filename,
+        mime_type,
+        len(image_bytes),
+    )
+    return filename
+
+
+@app.post("/api/process-screen")
+async def process_screen(request: ProcessScreenRequest):
+    """
+    Receive the locally-redacted screenshot and save the reconstructed image
+    on the server for inspection/debugging.
+    """
+    try:
+        filename = _save_redacted_screenshot(request.screenshot)
+        return {
+            "success": True,
+            "commands": [],
+            "savedImage": filename,
+            "message": "Redacted screenshot decoded and saved"
+        }
+    except ValueError as exc:
+        logger.warning("Rejected screenshot payload: %s", exc)
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        logger.error("Failed to save redacted screenshot: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to save screenshot")
+
 
 @app.get("/health")
 async def health():
