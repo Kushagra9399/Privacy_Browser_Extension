@@ -327,10 +327,28 @@ class CommandExecutor {
         if (!element || element.tagName.toLowerCase() !== 'select') throw new Error('Target element is not a select');
         const validation = this.validateActionableElement(element, 'select');
         if (!validation.valid) return { selected: false, blocked: true, errorCode: validation.errorCode, reason: validation.reason };
+        const options = Array.from(element.options);
+        const normalizedValue = value == null ? '' : String(value).trim();
+        const normalizedLabel = label == null ? '' : String(label).trim().toLowerCase();
+
         let option = null;
-        if (value) option = Array.from(element.options).find(o => o.value === value);
-        else if (label) option = Array.from(element.options).find(o => o.textContent === label);
-        if (!option) throw new Error(`Option not found: value=${value}, label=${label}`);
+
+        if (normalizedValue) {
+            option = options.find(o => String(o.value).trim() === normalizedValue);
+        }
+
+        if (!option && normalizedLabel) {
+            option = options.find(o =>
+                String(o.textContent || '').trim().toLowerCase() === normalizedLabel
+            );
+        }
+
+        if (!option) {
+            throw new Error(
+                `Option not found: value=${value ?? 'none'}, label=${label ?? 'none'}; available=${options.map(o => String(o.textContent || '').trim()).join(', ')}`
+            );
+        }
+
         element.value = option.value;
         element.dispatchEvent(new Event('change', { bubbles: true }));
         await this.wait(200);
