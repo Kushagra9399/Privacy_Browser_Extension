@@ -545,6 +545,14 @@ For FAILED: Explain what couldn't be accomplished.
                 message=f"Error: {str(e)}"
             )
 
+    def _clean_text(self, value: Any, max_length: int = 200) -> str:
+        """Safely normalize text included in LLM prompts."""
+        if value is None:
+            return ""
+        text = str(value).replace("\n", " ").replace("\r", " ").replace("\t", " ")
+        text = " ".join(text.split())
+        return text[:max_length]
+
     def _format_observation(self, observation: PageObservation) -> str:
         """Format current interactive state without exposing sensitive values."""
         lines = [
