@@ -290,7 +290,7 @@ if (typeof Config === 'undefined') {
             SERVER_URL: 'http://localhost:8000',
             ENABLE_LOCAL_VISION: true,
             ENABLE_REDACTION: true,
-            REDACTION_MODE: 'blur',
+            REDACTION_MODE: 'black',
             PERFORMANCE: {
                 maxScreenWidth: 1280,
                 maxScreenHeight: 720,

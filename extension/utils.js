@@ -26,7 +26,7 @@ class Config {
         SERVER_URL: 'http://localhost:8000',
         ENABLE_LOCAL_VISION: true,
         ENABLE_REDACTION: true,
-        REDACTION_MODE: 'blur', // blur, black, semantic
+        REDACTION_MODE: 'black', // blur, black, semantic
         PRIVACY_FILTERS: {
             detectPasswords: true,
             detectEmails: true,

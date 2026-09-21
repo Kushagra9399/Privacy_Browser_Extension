@@ -52,7 +52,7 @@ SERVER_PORT = int(os.getenv('SERVER_PORT', '8000'))
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
 CORS_ORIGINS = [
     origin.strip()
-    for origin in ('http://localhost:3000,https://mail.google.com,https://gmail.com').split(',')
+    for origin in ('http://localhost:3000,https://mail.google.com,https://gmail.com,https://www.canva.com,https://drive.google.com').split(',')
     if origin.strip()
 ]
 MAX_AGENT_STEPS = int(os.getenv('MAX_AGENT_STEPS', '20'))
