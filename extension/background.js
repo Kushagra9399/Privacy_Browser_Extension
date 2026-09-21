@@ -426,6 +426,14 @@ chrome.runtime.onMessage.addListener((message, sender) => {
                         ...event
                     }).catch(() => {});
                 }
+
+                // Also update the extension popup while it is open.
+                // The popup is a separate extension page and does not receive
+                // tab-targeted messages automatically.
+                chrome.runtime.sendMessage({
+                    type: 'agent_event',
+                    ...event
+                }).catch(() => {});
             } catch (error) {
                 console.warn('[AGENT_UI] Failed to persist agent state', error);
             }
