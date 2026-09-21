@@ -62,6 +62,13 @@ class AgentLoopOrchestrator {
             Logger.log('LOOP', `Execution mode: ${isComplex ? 'server' : 'local'}`);
             
             this.notifyPopup({
+                type: 'agent_started',
+                session_id: this.currentSessionId,
+                goal: userGoal,
+                max_steps: this.maxSteps
+            });
+
+            this.notifyPopup({
                 type: 'agent_mode_selected',
                 mode: isComplex ? 'server' : 'local'
             });
