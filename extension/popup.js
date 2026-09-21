@@ -167,7 +167,7 @@ class PopupController {
                 // does not make the agent appear to have started from scratch.
                 this.logs = [];
                 for (const event of (state.events || [])) {
-                    this.applyAgentEvent(event, false);
+                    this.applyAgentEvent(event, true);
                 }
             } else {
                 this.updateUIForAgentEnd();
