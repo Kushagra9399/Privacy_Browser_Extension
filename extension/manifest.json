@@ -38,6 +38,7 @@
         "command-executor.js",
         "session-manager.js",
         "agent-loop.js",
+        "agent-floating-ui.js",
         "content.js"
       ],
       "css": [
