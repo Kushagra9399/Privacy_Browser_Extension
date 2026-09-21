@@ -15,7 +15,9 @@ class PopupController {
         this.startRequested = false;
         this.agentStateHydrated = false;
 
+        this.popupPort = null;
         this.initializeUI();
+        this.connectPopupLifecycle();
         this.loadConfiguration();
         this.setupEventListeners();
         this.listenForAgentEvents();
@@ -23,6 +25,24 @@ class PopupController {
         this.loadPrivacyDebug();
         this.loadLatestAgentEvent();
         this.loadAgentUiState();
+    }
+
+    connectPopupLifecycle() {
+        try {
+            this.popupPort = chrome.runtime.connect({ name: 'privacy-browser-popup' });
+
+            chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+                const tabId = tabs?.[0]?.id;
+                if (Number.isInteger(tabId)) {
+                    this.popupPort?.postMessage({
+                        type: 'popup_open',
+                        tabId
+                    });
+                }
+            });
+        } catch (error) {
+            console.debug('[POPUP] Lifecycle connection unavailable', error);
+        }
     }
 
     initializeUI() {
