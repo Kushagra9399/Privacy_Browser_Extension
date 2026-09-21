@@ -81,8 +81,13 @@ class ElementRegistry {
             id_hash: this.hash(element.id || ''),
             name_hash: this.hash(element.name || ''),
             class_hash: this.hash(element.className || ''),
-            // Structural position
+            // Keep the hash for diagnostics, but retain the actual rounded
+            // position for tolerant validation.
             bbox_hash: this.hash(`${Math.round(rect.x)},${Math.round(rect.y)}`),
+            position: {
+                x: Math.round(rect.x),
+                y: Math.round(rect.y)
+            },
             // DOM position (not order)
             parent_tag: element.parentElement?.tagName.toLowerCase() || '',
             sibling_count: element.parentElement?.children.length || 0,
@@ -167,12 +172,23 @@ class ElementRegistry {
             };
         }
         
-        // Position can change slightly, so only check if drastically different
-        if (Math.abs(fingerprint.bbox_hash - currentFingerprint.bbox_hash) > 1000) {
-            return {
-                valid: false,
-                reason: 'POSITION_CHANGED'
-            };
+        // Bounding-box hashes are not suitable for distance comparison:
+        // a one-pixel movement can produce a completely different hash.
+        // Compare actual rounded viewport coordinates with a small tolerance.
+        const fingerprintPosition = fingerprint.position || null;
+        const currentPosition = currentFingerprint.position || null;
+
+        if (fingerprintPosition && currentPosition) {
+            const positionChanged =
+                Math.abs(fingerprintPosition.x - currentPosition.x) > 8 ||
+                Math.abs(fingerprintPosition.y - currentPosition.y) > 8;
+
+            if (positionChanged) {
+                return {
+                    valid: false,
+                    reason: 'POSITION_CHANGED'
+                };
+            }
         }
         
         // If we got here, it's probably still the same element
