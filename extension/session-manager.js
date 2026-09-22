@@ -367,7 +367,11 @@ class ClientSessionManager {
         
         try {
             return await this.perf.measureAsync('OBSERVE_CYCLE', async () => {
-                // Build observation
+                // Every reasoning cycle must start from the live DOM.
+                // Actions can replace nodes, open dialogs, change visibility, or mutate
+                // form state, so stale registry entries must never be reused as the
+                // source of truth for the next action.
+                this.refreshElementRegistry("pre-observation");
                 const observation = await this.buildObservation();
 
                 const requestPayload = {
@@ -426,6 +430,16 @@ class ClientSessionManager {
     /**
      * Build current page observation
      */
+    refreshElementRegistry(reason = "manual") {
+        try {
+            Logger.log('SESSION', `Refreshing DOM element registry: ${reason}`);
+            this.elementRegistry.rebuild();
+        } catch (error) {
+            Logger.error('SESSION', 'Failed to refresh DOM element registry', error);
+            throw error;
+        }
+    }
+
     async buildObservation() {
         const rect = document.documentElement.getBoundingClientRect();
 
