@@ -254,7 +254,10 @@ class AgentLoopOrchestrator {
 
                 // Detect whether the action actually changed the observable page state.
                 const observationAfter = this.getProgressSignature();
-                if (observationBefore && observationAfter && observationBefore === observationAfter) {
+                const stateSettingAction = ['type', 'clear', 'select', 'focus'].includes(String(action.type || '').toLowerCase());
+                if (stateSettingAction) {
+                    this.noProgressCount = 0;
+                } else if (observationBefore && observationAfter && observationBefore === observationAfter) {
                     this.noProgressCount++;
                 } else {
                     this.noProgressCount = 0;
@@ -316,7 +319,12 @@ class AgentLoopOrchestrator {
                     return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
                 })
                 .slice(0, 80)
-                .map(element => `${element.tagName}:${element.id || ''}:${element.getAttribute('aria-label') || element.textContent?.trim().substring(0, 40) || ''}`)
+                .map(element => {
+                    const tag = element.tagName;
+                    const label = element.getAttribute('aria-label') || element.textContent?.trim().substring(0, 40) || '';
+                    const inputState = ['INPUT', 'TEXTAREA', 'SELECT'].includes(tag) ? `:${element.value ? 'filled' : 'empty'}` : '';
+                    return `${tag}:${element.id || ''}:${label}${inputState}`;
+                })
                 .join('|');
             return `${location.pathname}|${window.scrollX}|${window.scrollY}|${focused}|${visibleInteractive}`;
         } catch (error) {
@@ -344,6 +352,10 @@ class AgentLoopOrchestrator {
         } else {
             this.lastActionSignature = signature;
             this.repeatedActionCount = 1;
+        }
+
+        if (['type', 'clear'].includes(String(action.type || '').toLowerCase())) {
+            return { allowed: true };
         }
 
         if (this.repeatedActionCount >= 3) {
