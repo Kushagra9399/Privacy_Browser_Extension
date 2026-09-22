@@ -487,7 +487,7 @@ For FAILED: Explain what couldn't be accomplished.
                 f"DECISION RULES:"
                 f"- Continue the SAME task across multiple actions until the goal is complete."
                 f"- A successful action is already done. Do NOT repeat the same successful action on the same target."
-                f"- For a sensitive input, value_present=true means the requested data has already been entered; do not type it again."
+                f"- For any input, textarea, or select, VALUE_PRESENT=true means that field already contains a value; do not issue another TYPE action for that target unless the task explicitly requires replacing or clearing it."
                 f"- For a select, choose the requested option using its available_options and return label or value."
                 f"- After filling required fields, perform the next required action such as selecting an option or clicking Sign In."
                 f"- Return FINISHED only after the user's goal is actually accomplished."
@@ -585,7 +585,9 @@ For FAILED: Explain what couldn't be accomplished.
                 parts.append(f"ARIA=\"{self._clean_text(elem.aria_label, 60)}\"")
             if elem.sensitive:
                 parts.append(f"SENSITIVE={self._clean_text(elem.sensitive_type or 'unknown', 30)}")
+            if elem.tag.lower() in {"input", "textarea", "select"}:
                 parts.append(f"VALUE_PRESENT={elem.value_present}")
+                parts.append(f"INPUT_STATE={'filled' if elem.value_present else 'empty'}")
             if elem.tag.lower() == "select":
                 parts.append(f"SELECTED=\"{self._clean_text(elem.selected_option or 'none', 80)}\"")
                 options = elem.available_options or []
