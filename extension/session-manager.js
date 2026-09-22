@@ -575,6 +575,7 @@ class ClientSessionManager {
         const type = (elem.getAttribute('type') || '').toLowerCase();
         if (type === 'password') return 'password';
         if (type === 'email') return 'email';
+        if (type === 'tel' || type === 'phone') return 'phone';
         
         const combined = [
             elem.name || '',
@@ -587,7 +588,7 @@ class ClientSessionManager {
         if (combined.includes('email')) return 'email';
         if (combined.includes('card') || combined.includes('cc') || combined.includes('cvv')) return 'credit_card';
         if (combined.includes('ssn') || combined.includes('social')) return 'ssn';
-        if (combined.includes('phone')) return 'phone';
+        if (combined.includes('phone') || combined.includes('mobile') || combined.includes('telephone') || combined.includes('tel')) return 'phone';
         
         return null;
     }
