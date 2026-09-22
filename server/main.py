@@ -217,11 +217,15 @@ class Action(BaseModel):
     class Config:
         use_enum_values = True
     
-    @field_validator('type')
+    @field_validator('type', mode='before')
+    @classmethod
     def validate_type(cls, v):
+        if isinstance(v, ActionType):
+            return v
         if isinstance(v, str):
+            normalized = v.strip().lower()
             try:
-                return ActionType(v.lower())
+                return ActionType(normalized)
             except ValueError:
                 raise ValueError(f"Invalid action type: {v}")
         return v
@@ -245,11 +249,29 @@ class AgentMessage(BaseModel):
 
 
 class GroqResponse(BaseModel):
-    """Structured response from Groq"""
+    """Structured response from Groq.
+
+    Groq output is normalized at the API boundary so status values such as
+    "continue", "Continue", and "CONTINUE" are treated identically.
+    """
     status: str  # "CONTINUE", "FINISHED", "FAILED"
     reasoning_summary: str
     action: Optional[Action] = None
     message: Optional[str] = None
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def normalize_status(cls, value):
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            status_map = {
+                "continue": "CONTINUE",
+                "finished": "FINISHED",
+                "failed": "FAILED",
+            }
+            if normalized in status_map:
+                return status_map[normalized]
+        return value
 
 
 # ============================================================================
