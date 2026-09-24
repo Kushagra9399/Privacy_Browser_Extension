@@ -221,6 +221,7 @@ class LocalPiiNer {
 
         if (!this.loggedInferenceDiagnostics) {
             Logger.log('PRIVACY', 'Local PII NER inference tensors', {
+                provider: this.session?.executionProvider || 'selected-provider',
                 textLength: text.length,
                 tokenCount: usable.length,
                 activeLength: position,
@@ -245,6 +246,27 @@ class LocalPiiNer {
             usable,
             position
         );
+
+        // Log exactly what the local NER model classified as an entity.
+        // This is local diagnostic output only; the text is never sent to
+        // the backend by this detector.
+        if (entities.length > 0) {
+            Logger.log('PRIVACY', 'PII NER detected personal-info candidates', {
+                detectedCount: entities.length,
+                entities: entities.map(entity => ({
+                    type: entity.type,
+                    text: text.slice(entity.start, entity.end),
+                    start: entity.start,
+                    end: entity.end,
+                    confidence: Number(entity.confidence.toFixed(4))
+                }))
+            });
+        } else {
+            Logger.log('PRIVACY', 'PII NER found no personal-info candidates', {
+                textLength: text.length,
+                preview: text.length <= 120 ? text : text.slice(0, 120) + '...'
+            });
+        }
 
         if (!this.loggedInferenceDiagnostics) {
             Logger.log('PRIVACY', 'Local PII NER decoded result', {
