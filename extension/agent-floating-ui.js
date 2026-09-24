@@ -596,7 +596,7 @@
                     width: 52px; height: 52px;
                     border: 1px solid rgba(15,23,42,.12);
                     border-radius: 50%;
-                    background: rgba(255,255,255,.97);
+                    background: rgba(255,255,255,.90);
                     box-shadow: 0 10px 30px rgba(15,23,42,.22);
                     cursor: pointer;
                     align-items: center;
