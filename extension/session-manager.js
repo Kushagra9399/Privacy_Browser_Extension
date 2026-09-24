@@ -602,7 +602,11 @@ class ClientSessionManager {
         if (combined.includes('email')) return 'email';
         if (combined.includes('card') || combined.includes('cc') || combined.includes('cvv')) return 'credit_card';
         if (combined.includes('ssn') || combined.includes('social')) return 'ssn';
-        if (combined.includes('phone') || combined.includes('mobile') || combined.includes('telephone') || combined.includes('tel')) return 'phone';
+        // Use token-aware matching so device controls such as "microphone"
+        // are not incorrectly classified as phone PII ("microphone" contains
+        // the substring "phone"). Only standalone phone-related field labels
+        // should be treated as phone-sensitive.
+        if (/(^|\\s|[-_])(?:phone|mobile|telephone|tel)(?:$|\\s|[-_])/i.test(combined)) return 'phone';
         
         return null;
     }
