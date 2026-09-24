@@ -394,12 +394,25 @@ class AgentLoopOrchestrator {
                 }
 
                 const text = String(element.textContent || element.getAttribute('aria-label') || '').trim();
-                if (text) {
-                    return text.substring(0, 160);
+                if (element.matches(':invalid')) {
+                    return text ? text.substring(0, 160) : 'A form field is invalid';
                 }
 
-                if (element.matches(':invalid')) {
-                    return 'A form field is invalid';
+                // Generic ARIA alerts are often normal application status
+                // messages (for example, Google Meet announcing that the
+                // camera/microphone was turned off). They are not necessarily
+                // validation failures. Only stop for alerts that clearly
+                // describe an input/form error.
+                if (element.matches('[role="alert"]')) {
+                    const validationWords = /invalid|error|failed|failure|required|incorrect|missing|must be|enter a|try again|could not|unable/i;
+                    if (validationWords.test(text)) {
+                        return text.substring(0, 160);
+                    }
+                    continue;
+                }
+
+                if (text && selector !== '[role="alert"]') {
+                    return text.substring(0, 160);
                 }
             }
         }
