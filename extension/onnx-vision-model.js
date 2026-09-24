@@ -55,22 +55,54 @@ class LocalOnnxVisionModel {
             'node_modules/onnxruntime-web/dist/'
         );
 
+        // Prefer WebGPU for local inference. If WebGPU is unavailable or
+        // initialization fails, fall back to the existing WASM backend.
         window.ort.env.wasm.numThreads = 1;
         window.ort.env.wasm.proxy = false;
         window.ort.env.wasm.wasmPaths = wasmPath;
 
-        Logger.log(
-            'VISION',
-            'Configuring ONNX Runtime Web for single-threaded WASM in offscreen document'
-        );
+        let provider = 'webgpu';
 
-        this.session = await window.ort.InferenceSession.create(
-            modelUrl,
-            {
-                executionProviders: ['wasm'],
-                graphOptimizationLevel: 'all'
+        try {
+            if (!navigator.gpu) {
+                throw new Error('WebGPU is not available in this context');
             }
-        );
+
+            const adapter = await navigator.gpu.requestAdapter();
+            if (!adapter) {
+                throw new Error('WebGPU adapter is unavailable');
+            }
+
+            Logger.log('VISION', 'Attempting ONNX Runtime WebGPU execution provider');
+
+            this.session = await window.ort.InferenceSession.create(
+                modelUrl,
+                {
+                    executionProviders: ['webgpu'],
+                    graphOptimizationLevel: 'all'
+                }
+            );
+
+            Logger.log('VISION', 'ONNX Runtime WebGPU initialized successfully');
+        } catch (webgpuError) {
+            provider = 'wasm';
+
+            Logger.warn(
+                'VISION',
+                'WebGPU initialization failed; falling back to WASM',
+                webgpuError
+            );
+
+            this.session = await window.ort.InferenceSession.create(
+                modelUrl,
+                {
+                    executionProviders: ['wasm'],
+                    graphOptimizationLevel: 'all'
+                }
+            );
+
+            Logger.log('VISION', 'ONNX Runtime WASM fallback initialized successfully');
+        }
 
         const inputName = this.session.inputNames?.[0];
         const input = inputName
@@ -116,7 +148,7 @@ class LocalOnnxVisionModel {
             topK: this.topK,
             inputWidth: this.inputWidth,
             inputHeight: this.inputHeight,
-            provider: 'wasm'
+            provider
         });
 
         return true;
