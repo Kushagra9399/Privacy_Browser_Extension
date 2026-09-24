@@ -509,6 +509,8 @@ class VisionProcessor {
 
         let node;
         let processed = 0;
+        let nodesWithNerResults = 0;
+        let totalNerEntities = 0;
 
         while ((node = walker.nextNode()) && processed < 80) {
             const text = node.textContent || '';
@@ -543,9 +545,23 @@ class VisionProcessor {
             }
 
             try {
-                const entities = await this.localPiiNer.infer(
-                    trimmed.slice(0, 2000)
-                );
+                const nerText = trimmed.slice(0, 2000);
+                const entities = await this.localPiiNer.infer(nerText);
+
+                if (entities.length > 0) {
+                    nodesWithNerResults++;
+                    totalNerEntities += entities.length;
+                    Logger.log('PRIVACY', 'Local NER detected entities in visible text', {
+                        nodeIndex: processed,
+                        textLength: nerText.length,
+                        entities: entities.map(entity => ({
+                            type: entity.type,
+                            start: entity.start,
+                            end: entity.end,
+                            confidence: Number(entity.confidence?.toFixed?.(4) || entity.confidence || 0)
+                        }))
+                    });
+                }
 
                 for (const entity of entities) {
                     const start = Number(entity.start);
@@ -622,9 +638,18 @@ class VisionProcessor {
             processed++;
         }
 
-        return redactions.filter(
+        const validRedactions = redactions.filter(
             item => item.bbox.width > 0 && item.bbox.height > 0
         );
+
+        Logger.log('PRIVACY', 'Local NER scan complete', {
+            processedTextNodes: processed,
+            nodesWithNerResults,
+            totalNerEntities,
+            validRedactions: validRedactions.length
+        });
+
+        return validRedactions;
     }
 
     /**
