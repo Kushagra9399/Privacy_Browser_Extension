@@ -652,6 +652,42 @@ class VisionProcessor {
         return validRedactions;
     }
 
+    excludeFloatingAgentUi(canvas) {
+        const host = document.getElementById('__privacy_browser_agent_floating_ui__');
+        if (!host || host.style.display === 'none') {
+            return;
+        }
+
+        const rect = host.getBoundingClientRect();
+        const scaleX = canvas.width / Math.max(1, window.innerWidth);
+        const scaleY = canvas.height / Math.max(1, window.innerHeight);
+
+        const x = Math.max(0, Math.floor(rect.left * scaleX));
+        const y = Math.max(0, Math.floor(rect.top * scaleY));
+        const right = Math.min(canvas.width, Math.ceil(rect.right * scaleX));
+        const bottom = Math.min(canvas.height, Math.ceil(rect.bottom * scaleY));
+
+        if (right <= x || bottom <= y) {
+            return;
+        }
+
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        if (!ctx) {
+            return;
+        }
+
+        // Paint the overlay region with a neutral fill before local vision
+        // runs. This prevents the floating UI from being detected or described.
+        ctx.save();
+        ctx.fillStyle = '#000000';
+        ctx.fillRect(x, y, right - x, bottom - y);
+        ctx.restore();
+
+        Logger.log('VISION', 'Excluded floating agent UI from visual observation', {
+            x, y, width: right - x, height: bottom - y
+        });
+    }
+
     /**
      * Process a complete screen
      * Capture + privacy filtering + feature extraction
@@ -666,6 +702,10 @@ class VisionProcessor {
                 Logger.error('VISION', 'Failed to capture viewport');
                 return null;
             }
+
+            // Exclude our own floating agent UI from visual perception. It is an
+            // extension overlay, not part of the user's webpage state.
+            this.excludeFloatingAgentUi(canvas);
 
             // Run local vision on the raw local canvas first. The raw pixels
             // remain inside the browser and are never sent to the server.
