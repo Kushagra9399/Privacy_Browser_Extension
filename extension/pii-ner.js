@@ -59,16 +59,53 @@ class LocalPiiNer {
 
         Logger.log('PRIVACY', 'Loading local PII NER ONNX model');
 
-        this.session = await window.ort.InferenceSession.create(
-            modelUrl,
-            {
-                executionProviders: ['wasm'],
-                graphOptimizationLevel: 'all'
+        // Prefer WebGPU for the PII NER model. If WebGPU is unavailable or
+        // ONNX Runtime cannot initialize the model with it, fall back to WASM.
+        let provider = 'webgpu';
+
+        try {
+            if (!navigator.gpu) {
+                throw new Error('WebGPU is not available in this context');
             }
-        );
+
+            const adapter = await navigator.gpu.requestAdapter();
+            if (!adapter) {
+                throw new Error('WebGPU adapter is unavailable');
+            }
+
+            Logger.log('PRIVACY', 'Attempting PII NER ONNX Runtime WebGPU');
+
+            this.session = await window.ort.InferenceSession.create(
+                modelUrl,
+                {
+                    executionProviders: ['webgpu'],
+                    graphOptimizationLevel: 'all'
+                }
+            );
+
+            Logger.log('PRIVACY', 'PII NER WebGPU initialized successfully');
+        } catch (webgpuError) {
+            provider = 'wasm';
+
+            Logger.warn(
+                'PRIVACY',
+                'PII NER WebGPU initialization failed; falling back to WASM',
+                webgpuError
+            );
+
+            this.session = await window.ort.InferenceSession.create(
+                modelUrl,
+                {
+                    executionProviders: ['wasm'],
+                    graphOptimizationLevel: 'all'
+                }
+            );
+
+            Logger.log('PRIVACY', 'PII NER WASM fallback initialized successfully');
+        }
 
         Logger.log('PRIVACY', 'Local PII NER ONNX model loaded', {
-            provider: 'wasm',
+            provider,
             maxLength: this.maxLength,
             inputs: this.session.inputNames || [],
             outputs: this.session.outputNames || [],
