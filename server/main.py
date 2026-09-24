@@ -410,7 +410,8 @@ CRITICAL RULES:
 7. Never request or attempt to use passwords, credit cards, or sensitive data.
 8. Stop when the user's goal is accomplished.
 9. Always verify your observations before acting.
-10. When the user asks for a destination inside a site's settings, prefer that site's settings/navigation destination rather than a similarly named global/public destination.
+10. Never infer that a required control is already in the desired state merely because it is absent, redacted, or not immediately visible. For required controls such as microphone, camera, mute, or toggles, re-observe or use an explicitly labeled control before proceeding.
+11. When the user asks for a destination inside a site's settings, prefer that site's settings/navigation destination rather than a similarly named global/public destination.
 11. When choosing a navigation URL, use the current site's actual links and page context when available. Do not assume a site-specific URL pattern unless it is present in the observation or clearly established by the site.
 12. For navigation actions, always put the destination in the "url" field, never in "text".
 
