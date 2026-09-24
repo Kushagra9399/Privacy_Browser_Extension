@@ -4,9 +4,6 @@
  * Bridges the existing VisionProcessor with ONNX Runtime Web
  * without sending page pixels to the backend.
  *
- * Expected model:
- *   models/gui-detector/model.onnx
- *
  * The model accepts BGR float32 image input at 640x640 and produces
  * YuNet's multi-scale face-detection heads.
  */
