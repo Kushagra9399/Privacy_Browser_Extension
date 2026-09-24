@@ -22,6 +22,7 @@ class LocalOnnxVisionModel {
         this.initialized = false;
         this.lastPreprocess = null;
         this.loggedOutputDiagnostics = false;
+        this.loggedInferenceDiagnostics = false;
         this.isOffscreenContext =
             typeof location !== 'undefined' &&
             location.protocol === 'chrome-extension:';
@@ -109,6 +110,14 @@ class LocalOnnxVisionModel {
             'VISION',
             `Local ONNX model loaded in offscreen context: ${this.modelPath} (${this.inputWidth}x${this.inputHeight})`
         );
+        Logger.log('VISION', 'YuNet detector configuration', {
+            confidenceThreshold: this.confidenceThreshold,
+            nmsThreshold: this.nmsThreshold,
+            topK: this.topK,
+            inputWidth: this.inputWidth,
+            inputHeight: this.inputHeight,
+            provider: 'wasm'
+        });
 
         return true;
     }
@@ -268,9 +277,22 @@ class LocalOnnxVisionModel {
         const detections = [];
         const strides = [8, 16, 32];
 
+        const outputEntries = Object.entries(outputs);
         const outputByName = new Map(
-            Object.entries(outputs).map(([name, tensor]) => [name, tensor])
+            outputEntries.map(([name, tensor]) => [name, tensor])
         );
+
+        if (!this.loggedInferenceDiagnostics) {
+            Logger.log(
+                'VISION',
+                'YuNet output tensors',
+                outputEntries.map(([name, tensor]) => ({
+                    name,
+                    dims: tensor?.dims || null,
+                    length: tensor?.data?.length || 0
+                }))
+            );
+        }
 
         for (const stride of strides) {
             const clsTensor = outputByName.get(`cls_${stride}`);
@@ -302,6 +324,9 @@ class LocalOnnxVisionModel {
                 Math.floor(kps.length / 10)
             );
 
+            let maxConfidence = 0;
+            let aboveThreshold = 0;
+
             for (let index = 0; index < count; index++) {
                 let clsScore = Number(cls[index]);
                 let objScore = Number(obj[index]);
@@ -315,10 +340,13 @@ class LocalOnnxVisionModel {
                 objScore = Math.max(0, Math.min(1, objScore));
 
                 const confidence = Math.sqrt(clsScore * objScore);
+                maxConfidence = Math.max(maxConfidence, confidence);
 
                 if (confidence < this.confidenceThreshold) {
                     continue;
                 }
+
+                aboveThreshold++;
 
                 const row = Math.floor(index / gridWidth);
                 const column = index % gridWidth;
@@ -384,12 +412,33 @@ class LocalOnnxVisionModel {
                     landmarks
                 });
             }
+            strideDiagnostics.push({
+                stride,
+                expectedCount,
+                actualCount: count,
+                maxConfidence: Number(maxConfidence.toFixed(4)),
+                aboveThreshold
+            });
         }
 
-        return this.nonMaximumSuppression(
+        const finalDetections = this.nonMaximumSuppression(
             detections,
             this.nmsThreshold
         ).slice(0, this.topK);
+
+        if (!this.loggedInferenceDiagnostics) {
+            Logger.log('VISION', 'YuNet inference diagnostics', {
+                strideDiagnostics,
+                rawCandidates: detections.length,
+                finalDetections: finalDetections.map(d => ({
+                    confidence: Number(d.confidence.toFixed(4)),
+                    bbox: d.bbox
+                }))
+            });
+            this.loggedInferenceDiagnostics = true;
+        }
+
+        return finalDetections;
     }
 
 
