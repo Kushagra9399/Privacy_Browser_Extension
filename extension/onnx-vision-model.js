@@ -223,8 +223,21 @@ class LocalOnnxVisionModel {
             throw new Error('Could not create ONNX preprocessing canvas');
         }
 
+        // YuNet is trained for an image with preserved geometry. Stretching a
+        // 16:9 browser screenshot into a 640x640 square distorts faces and can
+        // significantly reduce detection quality. Letterbox instead.
         ctx.fillStyle = '#000000';
         ctx.fillRect(0, 0, this.inputWidth, this.inputHeight);
+
+        const scale = Math.min(
+            this.inputWidth / canvas.width,
+            this.inputHeight / canvas.height
+        );
+
+        const resizedWidth = Math.max(1, Math.round(canvas.width * scale));
+        const resizedHeight = Math.max(1, Math.round(canvas.height * scale));
+        const offsetX = Math.floor((this.inputWidth - resizedWidth) / 2);
+        const offsetY = Math.floor((this.inputHeight - resizedHeight) / 2);
 
         ctx.drawImage(
             canvas,
@@ -232,10 +245,10 @@ class LocalOnnxVisionModel {
             0,
             canvas.width,
             canvas.height,
-            0,
-            0,
-            this.inputWidth,
-            this.inputHeight
+            offsetX,
+            offsetY,
+            resizedWidth,
+            resizedHeight
         );
 
         const imageData = ctx.getImageData(
@@ -249,8 +262,8 @@ class LocalOnnxVisionModel {
         const planeSize = this.inputWidth * this.inputHeight;
         const tensor = new Float32Array(planeSize * 3);
 
-        // OpenCV's YuNet implementation feeds BGR float pixels in the
-        // original 0-255 range. Canvas provides RGB, so convert RGB -> BGR.
+        // OpenCV YuNet consumes BGR pixels in the original 0-255 range.
+        // Canvas provides RGBA, so convert RGB -> BGR.
         for (let y = 0; y < this.inputHeight; y++) {
             for (let x = 0; x < this.inputWidth; x++) {
                 const sourceIndex = (y * this.inputWidth + x) * 4;
@@ -266,10 +279,29 @@ class LocalOnnxVisionModel {
             }
         }
 
+        if (!this.loggedInferenceDiagnostics) {
+            Logger.log('VISION', 'YuNet preprocessing geometry', {
+                source: {
+                    width: canvas.width,
+                    height: canvas.height
+                },
+                model: {
+                    width: this.inputWidth,
+                    height: this.inputHeight
+                },
+                scale,
+                resizedWidth,
+                resizedHeight,
+                offsetX,
+                offsetY
+            });
+        }
+
         return {
             tensor,
-            scaleX: canvas.width / this.inputWidth,
-            scaleY: canvas.height / this.inputHeight
+            scale,
+            offsetX,
+            offsetY
         };
     }
 
@@ -368,13 +400,19 @@ class LocalOnnxVisionModel {
 
                 const modelLeft = cx - width / 2;
                 const modelTop = cy - height / 2;
-                const scaleX = preprocessInfo?.scaleX || 1;
-                const scaleY = preprocessInfo?.scaleY || 1;
+                const modelRight = cx + width / 2;
+                const modelBottom = cy + height / 2;
 
-                const left = modelLeft * scaleX;
-                const top = modelTop * scaleY;
-                const scaledWidth = width * scaleX;
-                const scaledHeight = height * scaleY;
+                // Undo the letterbox transform so boxes line up with the
+                // original browser screenshot.
+                const scale = preprocessInfo?.scale || 1;
+                const offsetX = preprocessInfo?.offsetX || 0;
+                const offsetY = preprocessInfo?.offsetY || 0;
+
+                const left = (modelLeft - offsetX) / scale;
+                const top = (modelTop - offsetY) / scale;
+                const scaledWidth = (modelRight - modelLeft) / scale;
+                const scaledHeight = (modelBottom - modelTop) / scale;
 
                 const clipped = this.clipToCanvas(
                     canvasWidth,
@@ -395,11 +433,11 @@ class LocalOnnxVisionModel {
                 for (let point = 0; point < 5; point++) {
                     landmarks.push({
                         x: (
-                            Number(kps[kpsOffset + point * 2]) + column
-                        ) * stride * scaleX,
+                            (Number(kps[kpsOffset + point * 2]) + column) * stride - offsetX
+                        ) / scale,
                         y: (
-                            Number(kps[kpsOffset + point * 2 + 1]) + row
-                        ) * stride * scaleY
+                            (Number(kps[kpsOffset + point * 2 + 1]) + row) * stride - offsetY
+                        ) / scale
                     });
                 }
 
