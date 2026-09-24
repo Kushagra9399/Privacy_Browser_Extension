@@ -307,6 +307,7 @@ class LocalOnnxVisionModel {
 
     parseYuNetOutputs(outputs, canvasWidth, canvasHeight, preprocessInfo) {
         const detections = [];
+        const strideDiagnostics = [];
         const strides = [8, 16, 32];
 
         const outputEntries = Object.entries(outputs);
