@@ -23,6 +23,7 @@ class LocalPiiNer {
             'ORG',
             'MISC'
         ]);
+        this.loggedInferenceDiagnostics = false;
         this.isOffscreenContext =
             typeof location !== 'undefined' &&
             location.protocol === 'chrome-extension:';
@@ -66,7 +67,13 @@ class LocalPiiNer {
             }
         );
 
-        Logger.log('PRIVACY', 'Local PII NER ONNX model loaded');
+        Logger.log('PRIVACY', 'Local PII NER ONNX model loaded', {
+            provider: 'wasm',
+            maxLength: this.maxLength,
+            inputs: this.session.inputNames || [],
+            outputs: this.session.outputNames || [],
+            entityLabels: Array.from(this.entityLabels)
+        });
 
         for (const inputName of this.session.inputNames || []) {
             this.inputNames[inputName.toLowerCase()] = inputName;
@@ -175,6 +182,23 @@ class LocalPiiNer {
         const outputs = await this.session.run(feeds);
         const logits = this.findLogits(outputs);
 
+        if (!this.loggedInferenceDiagnostics) {
+            Logger.log('PRIVACY', 'Local PII NER inference tensors', {
+                textLength: text.length,
+                tokenCount: usable.length,
+                activeLength: position,
+                outputTensors: Object.fromEntries(
+                    Object.entries(outputs).map(([name, tensor]) => [
+                        name,
+                        {
+                            dims: tensor?.dims || null,
+                            length: tensor?.data?.length || 0
+                        }
+                    ])
+                )
+            });
+        }
+
         if (!logits) {
             throw new Error('NER model logits output was not found');
         }
@@ -184,6 +208,18 @@ class LocalPiiNer {
             usable,
             position
         );
+
+        if (!this.loggedInferenceDiagnostics) {
+            Logger.log('PRIVACY', 'Local PII NER decoded result', {
+                entities: entities.map(entity => ({
+                    type: entity.type,
+                    start: entity.start,
+                    end: entity.end,
+                    confidence: Number(entity.confidence.toFixed(4))
+                }))
+            });
+            this.loggedInferenceDiagnostics = true;
+        }
 
         return entities;
     }
