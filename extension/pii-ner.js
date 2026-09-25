@@ -921,3 +921,58 @@ class LocalPiiNer {
                 b.end - a.end
         );
         const merged = [];
+
+        for (const entity of sorted) {
+            const previous =
+                merged[merged.length - 1];
+
+            if (
+                previous &&
+                entity.start < previous.end
+            ) {
+                if (entity.end > previous.end) {
+                    previous.end = entity.end;
+                }
+
+                previous.confidence = Math.max(
+                    previous.confidence,
+                    entity.confidence
+                );
+                continue;
+            }
+
+            merged.push({ ...entity });
+        }
+
+        return merged;
+    }
+
+    softmaxMax(data, offset, count) {
+        let maxLogit = -Infinity;
+
+        for (let index = 0; index < count; index++) {
+            maxLogit = Math.max(
+                maxLogit,
+                Number(data[offset + index])
+            );
+        }
+
+        let sum = 0;
+
+        for (let index = 0; index < count; index++) {
+            sum += Math.exp(
+                Number(data[offset + index]) -
+                maxLogit
+            );
+        }
+
+        return sum > 0 ? 1 / sum : 0;
+    }
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = {
+        LocalPiiNer,
+        LocalPiiTokenizer
+    };
+}
