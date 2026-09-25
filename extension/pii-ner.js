@@ -24,14 +24,14 @@ class LocalPiiTokenizer {
     async initialize(tokenizerUrl) {
         const response = await fetch(tokenizerUrl);
         if (!response.ok) {
-            throw new Error(\`Could not load PII tokenizer: \${response.status}\`);
+            throw new Error(`Could not load PII tokenizer: ${response.status}`);
         }
 
         const tokenizer = await response.json();
         const model = tokenizer?.model;
 
         if (!model || model.type !== 'BPE') {
-            throw new Error(\`Unsupported PII tokenizer model type: \${model?.type || 'unknown'}\`);
+            throw new Error(`Unsupported PII tokenizer model type: ${model?.type || 'unknown'}`);
         }
 
         for (const [token, id] of Object.entries(model.vocab || {})) {
@@ -137,7 +137,7 @@ class LocalPiiTokenizer {
     }
 
     mergeKey(left, right) {
-        return \`\${left}\\u0000\${right}\`;
+        return `${left}\\u0000${right}`;
     }
 
     byteLevelEncode(text) {
@@ -407,7 +407,7 @@ class LocalPiiNer {
 
         if (!configResponse.ok) {
             throw new Error(
-                \`Could not load PII model config: \${configResponse.status}\`
+                `Could not load PII model config: ${configResponse.status}`
             );
         }
 
@@ -788,7 +788,7 @@ class LocalPiiNer {
             labelCount <= 0
         ) {
             throw new Error(
-                \`Unsupported PII logits shape: \${JSON.stringify(dims)}\`
+                `Unsupported PII logits shape: ${JSON.stringify(dims)}`
             );
         }
 
