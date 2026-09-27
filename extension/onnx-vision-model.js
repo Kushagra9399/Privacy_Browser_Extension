@@ -62,23 +62,58 @@ class LocalOnnxVisionModel {
         window.ort.env.wasm.proxy = false;
         window.ort.env.wasm.wasmPaths = wasmPath;
 
-        // YuNet is invoked repeatedly for every observation. In Chrome's
-        // offscreen document, the WebGPU execution provider can leave a cached
-        // session stuck after a successful first run. Use the single-threaded
-        // WASM provider for deterministic repeated inference instead.
-        const provider = 'wasm';
+        let provider = 'webgpu';
 
-        Logger.log('VISION', 'Initializing YuNet with ONNX Runtime WASM');
-
-        this.session = await window.ort.InferenceSession.create(
-            modelUrl,
-            {
-                executionProviders: ['wasm'],
-                graphOptimizationLevel: 'all'
+        try {
+            if (!navigator.gpu) {
+                throw new Error('WebGPU is not available in this context');
             }
-        );
 
-        Logger.log('VISION', 'ONNX Runtime WASM initialized successfully');
+            const adapter = await navigator.gpu.requestAdapter();
+            if (!adapter) {
+                throw new Error('WebGPU adapter is unavailable');
+            }
+
+            Logger.log('VISION', 'Attempting ONNX Runtime WebGPU execution provider');
+
+            this.session = await window.ort.InferenceSession.create(
+                modelUrl,
+                {
+                    executionProviders: ['webgpu'],
+                    graphOptimizationLevel: 'all',
+                    executionProviderOptions: {
+                        webgpu: {
+                            storageBufferCacheMode: 'disabled',
+                            uniformBufferCacheMode: 'disabled',
+                            queryResolveBufferCacheMode: 'disabled',
+                            defaultBufferCacheMode: 'disabled'
+                        }
+                    }
+                }
+            );
+
+            this.provider = provider;
+            Logger.log('VISION', 'ONNX Runtime WebGPU initialized successfully');
+        } catch (webgpuError) {
+            provider = 'wasm';
+
+            Logger.warn(
+                'VISION',
+                'WebGPU initialization failed; falling back to WASM',
+                webgpuError
+            );
+
+            this.session = await window.ort.InferenceSession.create(
+                modelUrl,
+                {
+                    executionProviders: ['wasm'],
+                    graphOptimizationLevel: 'all'
+                }
+            );
+
+            this.provider = provider;
+            Logger.log('VISION', 'ONNX Runtime WASM fallback initialized successfully');
+        }
 
         const inputName = this.session.inputNames?.[0];
         const input = inputName
@@ -152,30 +187,66 @@ class LocalOnnxVisionModel {
             [1, 3, this.inputHeight, this.inputWidth]
         );
 
-        const outputs = await this.session.run({
-            [this.inputName]: inputTensor
-        });
+        let outputs = null;
+        try {
+            const runStartedAt = performance.now();
+            Logger.log('VISION', 'ONNX session.run started', {
+                provider: this.provider || 'unknown'
+            });
 
-        if (!this.loggedOutputDiagnostics) {
-            Logger.log(
-                'VISION',
-                'ONNX inference completed',
-                Object.fromEntries(
-                    Object.entries(outputs).map(([name, tensor]) => [
-                        name,
-                        tensor?.dims || null
-                    ])
-                )
+            outputs = await this.session.run({
+                [this.inputName]: inputTensor
+            });
+
+            Logger.log('VISION', 'ONNX session.run completed', {
+                durationMs: Math.round(performance.now() - runStartedAt)
+            });
+
+            if (!this.loggedOutputDiagnostics) {
+                Logger.log(
+                    'VISION',
+                    'ONNX inference completed',
+                    Object.fromEntries(
+                        Object.entries(outputs).map(([name, tensor]) => [
+                            name,
+                            tensor?.dims || null
+                        ])
+                    )
+                );
+                this.loggedOutputDiagnostics = true;
+            }
+
+            return this.parseOutputs(
+                outputs,
+                canvas.width,
+                canvas.height,
+                preprocessed
             );
-            this.loggedOutputDiagnostics = true;
-        }
+        } catch (error) {
+            Logger.error('VISION', 'ONNX session.run failed', {
+                provider: this.provider || 'unknown',
+                error: error?.message || String(error)
+            });
+            throw error;
+        } finally {
+            // WebGPU tensors own GPU buffers. Dispose both input and outputs
+            // after parsing so repeated observations do not accumulate buffers.
+            try {
+                inputTensor?.dispose?.();
+            } catch (disposeError) {
+                Logger.warn('VISION', 'Failed to dispose ONNX input tensor', disposeError);
+            }
 
-        return this.parseOutputs(
-            outputs,
-            canvas.width,
-            canvas.height,
-            preprocessed
-        );
+            if (outputs) {
+                for (const tensor of Object.values(outputs)) {
+                    try {
+                        tensor?.dispose?.();
+                    } catch (disposeError) {
+                        Logger.warn('VISION', 'Failed to dispose ONNX output tensor', disposeError);
+                    }
+                }
+            }
+        }
     }
 
     async inferThroughOffscreenDocument(canvas) {
