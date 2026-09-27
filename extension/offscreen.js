@@ -8,6 +8,7 @@ let visionModel = null;
 let visionInitialization = null;
 let piiModel = null;
 let piiInitialization = null;
+let visionInferenceChain = Promise.resolve();
 
 async function getPiiModel() {
     if (piiModel) {
@@ -95,12 +96,42 @@ async function handleOffscreenRequest(request) {
 
         ctx.putImageData(imageData, 0, 0);
 
-        const detections = await model.infer(canvas);
+        // Serialize YuNet inference requests. Multiple observations can overlap
+        // while the agent is stepping, and concurrent session.run() calls against
+        // the same WebGPU/WASM session can stall the offscreen worker.
+        const runVisionInference = async () => {
+            const startedAt = performance.now();
+            Logger.log('VISION', 'Offscreen YuNet inference started', {
+                width,
+                height
+            });
 
-        return {
-            success: true,
-            detections
+            try {
+                const detections = await model.infer(canvas);
+                Logger.log('VISION', 'Offscreen YuNet inference completed', {
+                    detections: Array.isArray(detections) ? detections.length : 0,
+                    durationMs: Math.round(performance.now() - startedAt)
+                });
+                return {
+                    success: true,
+                    detections
+                };
+            } catch (error) {
+                Logger.error('VISION', 'Offscreen YuNet inference failed', {
+                    error: error?.message || String(error),
+                    durationMs: Math.round(performance.now() - startedAt)
+                });
+                throw error;
+            }
         };
+
+        const result = visionInferenceChain.then(runVisionInference, runVisionInference);
+        visionInferenceChain = result.then(
+            () => undefined,
+            () => undefined
+        );
+
+        return await result;
     }
 
     return {
