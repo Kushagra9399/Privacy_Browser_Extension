@@ -23,6 +23,7 @@ class LocalOnnxVisionModel {
         this.lastPreprocess = null;
         this.loggedOutputDiagnostics = false;
         this.loggedInferenceDiagnostics = false;
+        this.inferenceSequence = 0;
         this.isOffscreenContext =
             typeof location !== 'undefined' &&
             location.protocol === 'chrome-extension:';
@@ -218,11 +219,26 @@ class LocalOnnxVisionModel {
             canvas.height
         );
 
+        const requestId = ++this.inferenceSequence;
+        const startedAt = performance.now();
+        Logger.log('VISION', 'Offscreen vision request started', {
+            requestId,
+            width: canvas.width,
+            height: canvas.height
+        });
+
         const response = await chrome.runtime.sendMessage({
             type: 'offscreen_vision_request',
             width: canvas.width,
             height: canvas.height,
             pixels: Array.from(imageData.data)
+        });
+
+        Logger.log('VISION', 'Offscreen vision response received', {
+            requestId,
+            success: Boolean(response?.success),
+            detections: Array.isArray(response?.detections) ? response.detections.length : 0,
+            durationMs: Math.round(performance.now() - startedAt)
         });
 
         if (!response?.success) {
