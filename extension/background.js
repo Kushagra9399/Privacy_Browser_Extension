@@ -193,8 +193,26 @@ class ExtensionManager {
                 resolve(result);
             };
 
-            const timeout = setTimeout(() => {
-                finish({ success: false, error: 'Offscreen local AI request timed out' });
+            const timeout = setTimeout(async () => {
+                Logger.error('BG', 'Offscreen local AI request timed out; resetting offscreen document', {
+                    requestType: request.type,
+                    timeoutMs
+                });
+
+                // A timed-out WebGPU session can remain stuck inside the offscreen
+                // document. Destroy the document so the GPU device/session is
+                // released before the next observation creates a fresh one.
+                try {
+                    await chrome.offscreen.closeDocument();
+                    Logger.log('BG', 'Stuck offscreen AI document closed after timeout');
+                } catch (error) {
+                    Logger.warn('BG', 'Failed to close timed-out offscreen document', error);
+                }
+
+                finish({
+                    success: false,
+                    error: 'Offscreen local AI request timed out; offscreen document reset'
+                });
             }, timeoutMs);
 
             const port = chrome.runtime.connect({
