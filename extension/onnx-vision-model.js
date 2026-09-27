@@ -62,48 +62,23 @@ class LocalOnnxVisionModel {
         window.ort.env.wasm.proxy = false;
         window.ort.env.wasm.wasmPaths = wasmPath;
 
-        let provider = 'webgpu';
+        // YuNet is invoked repeatedly for every observation. In Chrome's
+        // offscreen document, the WebGPU execution provider can leave a cached
+        // session stuck after a successful first run. Use the single-threaded
+        // WASM provider for deterministic repeated inference instead.
+        const provider = 'wasm';
 
-        try {
-            if (!navigator.gpu) {
-                throw new Error('WebGPU is not available in this context');
+        Logger.log('VISION', 'Initializing YuNet with ONNX Runtime WASM');
+
+        this.session = await window.ort.InferenceSession.create(
+            modelUrl,
+            {
+                executionProviders: ['wasm'],
+                graphOptimizationLevel: 'all'
             }
+        );
 
-            const adapter = await navigator.gpu.requestAdapter();
-            if (!adapter) {
-                throw new Error('WebGPU adapter is unavailable');
-            }
-
-            Logger.log('VISION', 'Attempting ONNX Runtime WebGPU execution provider');
-
-            this.session = await window.ort.InferenceSession.create(
-                modelUrl,
-                {
-                    executionProviders: ['webgpu'],
-                    graphOptimizationLevel: 'all'
-                }
-            );
-
-            Logger.log('VISION', 'ONNX Runtime WebGPU initialized successfully');
-        } catch (webgpuError) {
-            provider = 'wasm';
-
-            Logger.warn(
-                'VISION',
-                'WebGPU initialization failed; falling back to WASM',
-                webgpuError
-            );
-
-            this.session = await window.ort.InferenceSession.create(
-                modelUrl,
-                {
-                    executionProviders: ['wasm'],
-                    graphOptimizationLevel: 'all'
-                }
-            );
-
-            Logger.log('VISION', 'ONNX Runtime WASM fallback initialized successfully');
-        }
+        Logger.log('VISION', 'ONNX Runtime WASM initialized successfully');
 
         const inputName = this.session.inputNames?.[0];
         const input = inputName
