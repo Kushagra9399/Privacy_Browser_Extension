@@ -1,14 +1,31 @@
 /**
- * Offscreen local AI worker.
+ * Offscreen local vision worker.
  * Runs ONNX Runtime and Transformers.js under the extension origin instead
  * of the webpage origin.
  */
 
 let visionModel = null;
 let visionInitialization = null;
-let reasoningAgent = null;
-let reasoningInitialization = null;
+let piiModel = null;
+let piiInitialization = null;
+let visionInferenceChain = Promise.resolve();
 
+async function getPiiModel() {
+    if (piiModel) {
+        return piiModel;
+    }
+
+    if (!piiInitialization) {
+        piiInitialization = (async () => {
+            const model = new LocalPiiNer();
+            await model.initialize();
+            piiModel = model;
+            return model;
+        })();
+    }
+
+    return piiInitialization;
+}
 async function getVisionModel() {
     if (visionModel?.initialized) {
         return visionModel;
@@ -26,30 +43,25 @@ async function getVisionModel() {
     return visionInitialization;
 }
 
-async function getReasoningAgent() {
-    if (reasoningAgent?.initialized) {
-        return reasoningAgent;
-    }
-
-    if (!reasoningInitialization) {
-        reasoningInitialization = (async () => {
-            const ReasoningAgent = window.LocalReasoningAgent;
-
-            if (typeof ReasoningAgent !== 'function') {
-                throw new Error('Local reasoning agent is not available');
-            }
-
-            const agent = new ReasoningAgent();
-            await agent.initialize();
-            reasoningAgent = agent;
-            return agent;
-        })();
-    }
-
-    return reasoningInitialization;
-}
-
 async function handleOffscreenRequest(request) {
+    if (request.type === 'run_offscreen_pii') {
+        const text = typeof request.text === 'string'
+            ? request.text.slice(0, 12000)
+            : '';
+
+        if (!text.trim()) {
+            return { success: true, entities: [] };
+        }
+
+        const model = await getPiiModel();
+        const entities = await model.detect(text);
+
+        return {
+            success: true,
+            entities
+        };
+    }
+
     if (request.type === 'run_offscreen_vision') {
         const model = await getVisionModel();
         const width = Number(request.width);
@@ -84,25 +96,42 @@ async function handleOffscreenRequest(request) {
 
         ctx.putImageData(imageData, 0, 0);
 
-        const detections = await model.infer(canvas);
+        // Serialize YuNet inference requests. Multiple observations can overlap
+        // while the agent is stepping, and concurrent session.run() calls against
+        // the same WebGPU/WASM session can stall the offscreen worker.
+        const runVisionInference = async () => {
+            const startedAt = performance.now();
+            Logger.log('VISION', 'Offscreen YuNet inference started', {
+                width,
+                height
+            });
 
-        return {
-            success: true,
-            detections
+            try {
+                const detections = await model.infer(canvas);
+                Logger.log('VISION', 'Offscreen YuNet inference completed', {
+                    detections: Array.isArray(detections) ? detections.length : 0,
+                    durationMs: Math.round(performance.now() - startedAt)
+                });
+                return {
+                    success: true,
+                    detections
+                };
+            } catch (error) {
+                Logger.error('VISION', 'Offscreen YuNet inference failed', {
+                    error: error?.message || String(error),
+                    durationMs: Math.round(performance.now() - startedAt)
+                });
+                throw error;
+            }
         };
-    }
 
-    if (request.type === 'run_offscreen_reasoning') {
-        const agent = await getReasoningAgent();
-        const action = await agent.reason(
-            request.goal,
-            request.observation
+        const result = visionInferenceChain.then(runVisionInference, runVisionInference);
+        visionInferenceChain = result.then(
+            () => undefined,
+            () => undefined
         );
 
-        return {
-            success: true,
-            action
-        };
+        return await result;
     }
 
     return {
@@ -169,4 +198,4 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
 });
 
-Logger.log('LOCAL_AGENT', 'Offscreen local AI document loaded');
+Logger.log('VISION', 'Offscreen local vision document loaded');

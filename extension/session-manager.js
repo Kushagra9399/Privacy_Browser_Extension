@@ -81,8 +81,13 @@ class ElementRegistry {
             id_hash: this.hash(element.id || ''),
             name_hash: this.hash(element.name || ''),
             class_hash: this.hash(element.className || ''),
-            // Structural position
+            // Keep the hash for diagnostics, but retain the actual rounded
+            // position for tolerant validation.
             bbox_hash: this.hash(`${Math.round(rect.x)},${Math.round(rect.y)}`),
+            position: {
+                x: Math.round(rect.x),
+                y: Math.round(rect.y)
+            },
             // DOM position (not order)
             parent_tag: element.parentElement?.tagName.toLowerCase() || '',
             sibling_count: element.parentElement?.children.length || 0,
@@ -167,12 +172,23 @@ class ElementRegistry {
             };
         }
         
-        // Position can change slightly, so only check if drastically different
-        if (Math.abs(fingerprint.bbox_hash - currentFingerprint.bbox_hash) > 1000) {
-            return {
-                valid: false,
-                reason: 'POSITION_CHANGED'
-            };
+        // Bounding-box hashes are not suitable for distance comparison:
+        // a one-pixel movement can produce a completely different hash.
+        // Compare actual rounded viewport coordinates with a small tolerance.
+        const fingerprintPosition = fingerprint.position || null;
+        const currentPosition = currentFingerprint.position || null;
+
+        if (fingerprintPosition && currentPosition) {
+            const positionChanged =
+                Math.abs(fingerprintPosition.x - currentPosition.x) > 8 ||
+                Math.abs(fingerprintPosition.y - currentPosition.y) > 8;
+
+            if (positionChanged) {
+                return {
+                    valid: false,
+                    reason: 'POSITION_CHANGED'
+                };
+            }
         }
         
         // If we got here, it's probably still the same element
@@ -242,6 +258,7 @@ class ClientSessionManager {
         this.privacyFilter = typeof PrivacyFilter !== 'undefined'
             ? new PrivacyFilter()
             : null;
+        this.visionProcessor = null;
         this.elementRegistry = new ElementRegistry();
         this.perf = new PerformanceMonitor();
         
@@ -350,19 +367,28 @@ class ClientSessionManager {
         
         try {
             return await this.perf.measureAsync('OBSERVE_CYCLE', async () => {
-                // Build observation
-                const observation = this.buildObservation();
-                
+                // Every reasoning cycle must start from the live DOM.
+                // Actions can replace nodes, open dialogs, change visibility, or mutate
+                // form state, so stale registry entries must never be reused as the
+                // source of truth for the next action.
+                this.refreshElementRegistry("pre-observation");
+                const observation = await this.buildObservation();
+
+                const requestPayload = {
+                    session_id: this.sessionId,
+                    observation
+                };
+                const requestBody = JSON.stringify(requestPayload);
+
+                await this.recordPrivacyDebugRequest('/api/agent/observe', requestBody);
+
                 Logger.log('SESSION', `Sending observation ${observation.observation_id}`);
                 
-                // Send to server
+                // Send the exact same serialized body captured by the privacy inspector.
                 const response = await fetch(`${this.serverUrl}/api/agent/observe`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        session_id: this.sessionId,
-                        observation: observation
-                    })
+                    body: requestBody
                 });
                 
                 if (!response.ok) {
@@ -390,6 +416,7 @@ class ClientSessionManager {
                 
                 if (data.action) {
                     Logger.log('SESSION', `Received action: ${data.action.type}`);
+                    data.action.reasoning_summary = data.reasoning_summary || '';
                 }
                 
                 return data.action;
@@ -403,20 +430,29 @@ class ClientSessionManager {
     /**
      * Build current page observation
      */
-    buildObservation() {
+    refreshElementRegistry(reason = "manual") {
+        try {
+            Logger.log('SESSION', `Refreshing DOM element registry: ${reason}`);
+            this.elementRegistry.rebuild();
+        } catch (error) {
+            Logger.error('SESSION', 'Failed to refresh DOM element registry', error);
+            throw error;
+        }
+    }
+
+    async buildObservation() {
         const rect = document.documentElement.getBoundingClientRect();
-        
-        // Get all interactive elements
+
+        // Always build the safe DOM observation locally.
         const allElements = extractInteractiveDomElements();
         const elements = [];
-        
+
         for (const elem of allElements) {
             const agentId = this.elementRegistry.registerElement(elem);
             if (!agentId) continue;
-            
-            // Privacy check
+
             const sensitiveType = this.detectSensitive(elem);
-            
+
             elements.push({
                 agent_element_id: agentId,
                 tag: elem.tagName.toLowerCase(),
@@ -436,6 +472,17 @@ class ClientSessionManager {
                 interactive: true,
                 sensitive: !!sensitiveType,
                 sensitive_type: sensitiveType,
+                value_present: ['INPUT', 'TEXTAREA', 'SELECT'].includes(elem.tagName)
+                    ? (elem.tagName === 'SELECT'
+                        ? !!elem.value
+                        : !!elem.value)
+                    : false,
+                selected_option: elem.tagName === 'SELECT'
+                    ? (elem.options[elem.selectedIndex]?.textContent?.trim() || null)
+                    : null,
+                available_options: elem.tagName === 'SELECT'
+                    ? Array.from(elem.options).map(option => option.textContent?.trim()).filter(Boolean).slice(0, 50)
+                    : null,
                 bbox: {
                     x: elem.getBoundingClientRect().left,
                     y: elem.getBoundingClientRect().top,
@@ -444,18 +491,83 @@ class ClientSessionManager {
                 }
             });
         }
-        
+
+        let visualContext = null;
+
+        if (this.visionProcessor) {
+            try {
+                Logger.log('SESSION', 'Running local privacy/vision pipeline before server observation');
+
+                const result = await this.visionProcessor.processScreen();
+
+                if (result) {
+                    visualContext = {
+                        screenshot: result.screenshot,
+                        redactionMask: result.redactionMask,
+                        canvas: result.features?.canvas || null,
+                        colors: result.features?.colors || null,
+                        regions: result.features?.regions || null,
+                        complexity: result.features?.complexity || null,
+                        timestamp: result.timestamp
+                    };
+
+                    Logger.log('SESSION', 'Local privacy/vision pipeline completed', {
+                        redactions: result.redactionMask?.redactions?.length || 0,
+                        screenshotSize: result.screenshot?.size || 0
+                    });
+                }
+            } catch (error) {
+                Logger.error('SESSION', 'Local privacy/vision pipeline failed; refusing to send raw visual context', error);
+            }
+        }
+
         return {
             observation_id: `obs_${uuid.v4().substring(0, 8)}`,
             page_revision: this.observationCount++,
-            url: window.location.href,
-            title: document.title,
+            url: window.location.origin + window.location.pathname,
+            title: this.sanitizeObservationText(document.title || ''),
             viewport_width: window.innerWidth,
             viewport_height: window.innerHeight,
             timestamp: new Date().toISOString(),
-            elements: elements,
-            screenshot_available: false
+            elements,
+            screenshot_available: !!visualContext?.screenshot,
+            visual_context: visualContext
         };
+    }
+    /**
+     * Store the exact outbound JSON payload locally for privacy inspection.
+     * This never sends debug data to the backend; it uses extension session storage only.
+     */
+    async recordPrivacyDebugRequest(endpoint, requestBody) {
+        try {
+            const serialized = String(requestBody || '');
+            const payload = JSON.parse(serialized);
+            const record = {
+                endpoint,
+                timestamp: new Date().toISOString(),
+                bytes: new Blob([serialized]).size,
+                payload
+            };
+
+            await new Promise((resolve) => {
+                chrome.runtime.sendMessage({
+                    type: 'privacy_debug_capture',
+                    record
+                }, () => {
+                    void chrome.runtime.lastError;
+                    resolve();
+                });
+            });
+
+            Logger.log('PRIVACY_DEBUG', 'Captured exact outbound backend payload through extension background', {
+                endpoint,
+                bytes: record.bytes,
+                screenshotPresent: !!payload?.observation?.visual_context?.screenshot,
+                redactionCount: payload?.observation?.visual_context?.redactionMask?.redactions?.length || 0
+            });
+        } catch (error) {
+            Logger.warn('PRIVACY_DEBUG', 'Could not capture outbound payload for inspection', error);
+        }
     }
 
     /**
@@ -477,6 +589,7 @@ class ClientSessionManager {
         const type = (elem.getAttribute('type') || '').toLowerCase();
         if (type === 'password') return 'password';
         if (type === 'email') return 'email';
+        if (type === 'tel' || type === 'phone') return 'phone';
         
         const combined = [
             elem.name || '',
@@ -489,7 +602,11 @@ class ClientSessionManager {
         if (combined.includes('email')) return 'email';
         if (combined.includes('card') || combined.includes('cc') || combined.includes('cvv')) return 'credit_card';
         if (combined.includes('ssn') || combined.includes('social')) return 'ssn';
-        if (combined.includes('phone')) return 'phone';
+        // Use token-aware matching so device controls such as "microphone"
+        // are not incorrectly classified as phone PII ("microphone" contains
+        // the substring "phone"). Only standalone phone-related field labels
+        // should be treated as phone-sensitive.
+        if (/(^|\\s|[-_])(?:phone|mobile|telephone|tel)(?:$|\\s|[-_])/i.test(combined)) return 'phone';
         
         return null;
     }

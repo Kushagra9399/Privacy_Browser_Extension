@@ -62,6 +62,13 @@ class AgentLoopOrchestrator {
             Logger.log('LOOP', `Execution mode: ${isComplex ? 'server' : 'local'}`);
             
             this.notifyPopup({
+                type: 'agent_started',
+                session_id: this.currentSessionId,
+                goal: userGoal,
+                max_steps: this.maxSteps
+            });
+
+            this.notifyPopup({
                 type: 'agent_mode_selected',
                 mode: isComplex ? 'server' : 'local'
             });
@@ -88,21 +95,21 @@ class AgentLoopOrchestrator {
         const goal = String(userGoal || '').trim().toLowerCase();
         if (!goal) return false;
 
-        const complexPatterns = [
-            /\b(compare|comparison|comparative)\b/,
-            /\b(summarize|summarise|summary)\b/,
-            /\b(recommend|recommendation|best|better|which one|which is)\b/,
-            /\b(analy[sz]e|analysis|evaluate|evaluation)\b/,
-            /\b(explain|why|reason|reasoning)\b/,
-            /\b(review|reviews|pros and cons|advantages|disadvantages)\b/,
-            /\b(multiple|several|all of|top \d+|rank|ranking)\b/,
-            /\b(extract|collect|find)\b.*\b(from|across|multiple|several|all)\b/,
-            /\b(and then|after that|then)\b.*\b(and then|after that|then)\b/
+        // The privacy architecture keeps perception local but delegates task
+        // reasoning to the backend. Therefore normal user goals are server
+        // reasoning tasks unless the goal is explicitly a local control action.
+        const localOnlyPatterns = [
+            /^(stop|pause|resume)\s+(processing|agent)$/,
+            /^(get|show)\s+(status|agent status)$/
         ];
 
-        return complexPatterns.some(pattern => pattern.test(goal));
+        if (localOnlyPatterns.some(pattern => pattern.test(goal))) {
+            return false;
+        }
+
+        return true;
     }
-    
+
     /**
      * Main agent loop
      * Runs until the goal is achieved, a safety limit is reached, or repeated
@@ -164,7 +171,8 @@ class AgentLoopOrchestrator {
                 this.notifyPopup({
                     type: 'action_received',
                     action_type: action.type,
-                    reason: action.reason || ''
+                    reason: action.reason || '',
+                    reasoning_summary: action.reasoning_summary || ''
                 });
                 
                 // Check for completion
@@ -246,7 +254,10 @@ class AgentLoopOrchestrator {
 
                 // Detect whether the action actually changed the observable page state.
                 const observationAfter = this.getProgressSignature();
-                if (observationBefore && observationAfter && observationBefore === observationAfter) {
+                const stateSettingAction = ['type', 'clear', 'select', 'focus'].includes(String(action.type || '').toLowerCase());
+                if (stateSettingAction) {
+                    this.noProgressCount = 0;
+                } else if (observationBefore && observationAfter && observationBefore === observationAfter) {
                     this.noProgressCount++;
                 } else {
                     this.noProgressCount = 0;
@@ -268,6 +279,11 @@ class AgentLoopOrchestrator {
                     type: 'loop_error',
                     error_message: error.message
                 });
+
+                if (!this.sessionManager.isRunning) {
+                    this.stopForSafety(`Session became inactive: ${error.message}`);
+                    break;
+                }
 
                 if (this.errorCount >= 3) {
                     this.stopForSafety(`Repeated loop errors: ${error.message}`);
@@ -303,7 +319,12 @@ class AgentLoopOrchestrator {
                     return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
                 })
                 .slice(0, 80)
-                .map(element => `${element.tagName}:${element.id || ''}:${element.getAttribute('aria-label') || element.textContent?.trim().substring(0, 40) || ''}`)
+                .map(element => {
+                    const tag = element.tagName;
+                    const label = element.getAttribute('aria-label') || element.textContent?.trim().substring(0, 40) || '';
+                    const inputState = ['INPUT', 'TEXTAREA', 'SELECT'].includes(tag) ? `:${element.value ? 'filled' : 'empty'}` : '';
+                    return `${tag}:${element.id || ''}:${label}${inputState}`;
+                })
                 .join('|');
             return `${location.pathname}|${window.scrollX}|${window.scrollY}|${focused}|${visibleInteractive}`;
         } catch (error) {
@@ -331,6 +352,10 @@ class AgentLoopOrchestrator {
         } else {
             this.lastActionSignature = signature;
             this.repeatedActionCount = 1;
+        }
+
+        if (['type', 'clear'].includes(String(action.type || '').toLowerCase())) {
+            return { allowed: true };
         }
 
         if (this.repeatedActionCount >= 3) {
@@ -369,12 +394,25 @@ class AgentLoopOrchestrator {
                 }
 
                 const text = String(element.textContent || element.getAttribute('aria-label') || '').trim();
-                if (text) {
-                    return text.substring(0, 160);
+                if (element.matches(':invalid')) {
+                    return text ? text.substring(0, 160) : 'A form field is invalid';
                 }
 
-                if (element.matches(':invalid')) {
-                    return 'A form field is invalid';
+                // Generic ARIA alerts are often normal application status
+                // messages (for example, Google Meet announcing that the
+                // camera/microphone was turned off). They are not necessarily
+                // validation failures. Only stop for alerts that clearly
+                // describe an input/form error.
+                if (element.matches('[role="alert"]')) {
+                    const validationWords = /invalid|error|failed|failure|required|incorrect|missing|must be|enter a|try again|could not|unable/i;
+                    if (validationWords.test(text)) {
+                        return text.substring(0, 160);
+                    }
+                    continue;
+                }
+
+                if (text && selector !== '[role="alert"]') {
+                    return text.substring(0, 160);
                 }
             }
         }
@@ -582,8 +620,9 @@ class AgentLoopOrchestrator {
     notifyPopup(event) {
         try {
             chrome.runtime.sendMessage({
+                ...event,
                 type: 'agent_event',
-                ...event
+                event_type: event.type
             }).catch((err) => {
                 // Popup might not be open, that's OK
                 Logger.debug('LOOP', 'Popup message failed', err?.message);
@@ -628,6 +667,12 @@ function initializeAgentLoop() {
     if (!globalAgentLoop && typeof ClientSessionManager !== 'undefined' && typeof CommandExecutor !== 'undefined') {
         const sessionMgr = new ClientSessionManager();
         const cmdExecutor = new CommandExecutor();
+
+        // Reuse the already initialized VisionProcessor so agent observations
+        // pass through the same local privacy boundary before network access.
+        if (typeof agent !== 'undefined' && agent?.visionProcessor) {
+            sessionMgr.visionProcessor = agent.visionProcessor;
+        }
         globalAgentLoop = new AgentLoopOrchestrator(sessionMgr, cmdExecutor);
         
         Logger.log('LOOP', 'Global agent loop initialized');

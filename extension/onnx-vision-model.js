@@ -4,13 +4,8 @@
  * Bridges the existing VisionProcessor with ONNX Runtime Web
  * without sending page pixels to the backend.
  *
- * Expected model:
- *   models/gui-detector/model.onnx
- *
- * The model accepts RGB image input and produces YOLO-style
- * object-detection output. The current parser handles the
- * model's multiple [x, y, w, h, objectness, classScore]
- * output heads and combines them before NMS.
+ * The model accepts BGR float32 image input at 640x640 and produces
+ * YuNet's multi-scale face-detection heads.
  */
 
 class LocalOnnxVisionModel {
@@ -19,11 +14,16 @@ class LocalOnnxVisionModel {
         this.inputName = null;
         this.inputWidth = 640;
         this.inputHeight = 640;
-        this.confidenceThreshold = 0.25;
-        this.modelPath = 'models/gui-detector/model.onnx';
+        this.confidenceThreshold = 0.9;
+        this.nmsThreshold = 0.3;
+        this.topK = 5000;
+        this.modelPath = 'models/face-detector/face_detection_yunet_2023mar.onnx';
+        this.modelType = 'yunet';
         this.initialized = false;
         this.lastPreprocess = null;
         this.loggedOutputDiagnostics = false;
+        this.loggedInferenceDiagnostics = false;
+        this.inferenceSequence = 0;
         this.isOffscreenContext =
             typeof location !== 'undefined' &&
             location.protocol === 'chrome-extension:';
@@ -47,34 +47,92 @@ class LocalOnnxVisionModel {
         }
 
         const modelUrl = chrome.runtime.getURL(this.modelPath);
+
+        Logger.log(
+            'VISION',
+            'Loading local ONNX vision model: ' + this.modelPath
+        );
         const wasmPath = chrome.runtime.getURL(
             'node_modules/onnxruntime-web/dist/'
         );
 
+        // Prefer WebGPU for local inference. If WebGPU is unavailable or
+        // initialization fails, fall back to the existing WASM backend.
         window.ort.env.wasm.numThreads = 1;
         window.ort.env.wasm.proxy = false;
         window.ort.env.wasm.wasmPaths = wasmPath;
 
-        Logger.log(
-            'VISION',
-            'Configuring ONNX Runtime Web for single-threaded WASM in offscreen document'
-        );
+        let provider = 'webgpu';
 
-        this.session = await window.ort.InferenceSession.create(
-            modelUrl,
-            {
-                executionProviders: ['wasm'],
-                graphOptimizationLevel: 'all'
+        try {
+            if (!navigator.gpu) {
+                throw new Error('WebGPU is not available in this context');
             }
-        );
 
-        const input = this.session.getInputs()[0];
+            const adapter = await navigator.gpu.requestAdapter();
+            if (!adapter) {
+                throw new Error('WebGPU adapter is unavailable');
+            }
+
+            Logger.log('VISION', 'Attempting ONNX Runtime WebGPU execution provider');
+
+            this.session = await window.ort.InferenceSession.create(
+                modelUrl,
+                {
+                    executionProviders: ['webgpu'],
+                    graphOptimizationLevel: 'all',
+                    executionProviderOptions: {
+                        webgpu: {
+                            storageBufferCacheMode: 'disabled',
+                            uniformBufferCacheMode: 'disabled',
+                            queryResolveBufferCacheMode: 'disabled',
+                            defaultBufferCacheMode: 'disabled'
+                        }
+                    }
+                }
+            );
+
+            this.provider = provider;
+            Logger.log('VISION', 'ONNX Runtime WebGPU initialized successfully');
+        } catch (webgpuError) {
+            provider = 'wasm';
+
+            Logger.warn(
+                'VISION',
+                'WebGPU initialization failed; falling back to WASM',
+                webgpuError
+            );
+
+            this.session = await window.ort.InferenceSession.create(
+                modelUrl,
+                {
+                    executionProviders: ['wasm'],
+                    graphOptimizationLevel: 'all'
+                }
+            );
+
+            this.provider = provider;
+            Logger.log('VISION', 'ONNX Runtime WASM fallback initialized successfully');
+        }
+
+        const inputName = this.session.inputNames?.[0];
+        const input = inputName
+            ? {
+                name: inputName,
+                ...(this.session.inputMetadata?.find(item => item.name === inputName) || {})
+            }
+            : null;
 
         if (!input) {
             throw new Error('ONNX model has no input tensor');
         }
 
         this.inputName = input.name;
+
+        Logger.log(
+            'VISION',
+            'ONNX input: ' + input.name + ' ' + JSON.stringify(input.dims)
+        );
 
         if (Array.isArray(input.dims) && input.dims.length === 4) {
             const height = Number(input.dims[2]);
@@ -95,6 +153,14 @@ class LocalOnnxVisionModel {
             'VISION',
             `Local ONNX model loaded in offscreen context: ${this.modelPath} (${this.inputWidth}x${this.inputHeight})`
         );
+        Logger.log('VISION', 'YuNet detector configuration', {
+            confidenceThreshold: this.confidenceThreshold,
+            nmsThreshold: this.nmsThreshold,
+            topK: this.topK,
+            inputWidth: this.inputWidth,
+            inputHeight: this.inputHeight,
+            provider
+        });
 
         return true;
     }
@@ -121,16 +187,66 @@ class LocalOnnxVisionModel {
             [1, 3, this.inputHeight, this.inputWidth]
         );
 
-        const outputs = await this.session.run({
-            [this.inputName]: inputTensor
-        });
+        let outputs = null;
+        try {
+            const runStartedAt = performance.now();
+            Logger.log('VISION', 'ONNX session.run started', {
+                provider: this.provider || 'unknown'
+            });
 
-        return this.parseOutputs(
-            outputs,
-            canvas.width,
-            canvas.height,
-            preprocessed
-        );
+            outputs = await this.session.run({
+                [this.inputName]: inputTensor
+            });
+
+            Logger.log('VISION', 'ONNX session.run completed', {
+                durationMs: Math.round(performance.now() - runStartedAt)
+            });
+
+            if (!this.loggedOutputDiagnostics) {
+                Logger.log(
+                    'VISION',
+                    'ONNX inference completed',
+                    Object.fromEntries(
+                        Object.entries(outputs).map(([name, tensor]) => [
+                            name,
+                            tensor?.dims || null
+                        ])
+                    )
+                );
+                this.loggedOutputDiagnostics = true;
+            }
+
+            return this.parseOutputs(
+                outputs,
+                canvas.width,
+                canvas.height,
+                preprocessed
+            );
+        } catch (error) {
+            Logger.error('VISION', 'ONNX session.run failed', {
+                provider: this.provider || 'unknown',
+                error: error?.message || String(error)
+            });
+            throw error;
+        } finally {
+            // WebGPU tensors own GPU buffers. Dispose both input and outputs
+            // after parsing so repeated observations do not accumulate buffers.
+            try {
+                inputTensor?.dispose?.();
+            } catch (disposeError) {
+                Logger.warn('VISION', 'Failed to dispose ONNX input tensor', disposeError);
+            }
+
+            if (outputs) {
+                for (const tensor of Object.values(outputs)) {
+                    try {
+                        tensor?.dispose?.();
+                    } catch (disposeError) {
+                        Logger.warn('VISION', 'Failed to dispose ONNX output tensor', disposeError);
+                    }
+                }
+            }
+        }
     }
 
     async inferThroughOffscreenDocument(canvas) {
@@ -149,6 +265,14 @@ class LocalOnnxVisionModel {
             canvas.height
         );
 
+        const requestId = ++this.inferenceSequence;
+        const startedAt = performance.now();
+        Logger.log('VISION', 'Offscreen vision request started', {
+            requestId,
+            width: canvas.width,
+            height: canvas.height
+        });
+
         const response = await chrome.runtime.sendMessage({
             type: 'offscreen_vision_request',
             width: canvas.width,
@@ -156,7 +280,20 @@ class LocalOnnxVisionModel {
             pixels: Array.from(imageData.data)
         });
 
+        Logger.log('VISION', 'Offscreen vision response received', {
+            requestId,
+            success: Boolean(response?.success),
+            detections: Array.isArray(response?.detections) ? response.detections.length : 0,
+            durationMs: Math.round(performance.now() - startedAt)
+        });
+
         if (!response?.success) {
+            Logger.error(
+                'VISION',
+                'Offscreen vision inference returned an error',
+                response?.error || response
+            );
+
             throw new Error(
                 response?.error || 'Offscreen vision inference failed'
             );
@@ -180,34 +317,21 @@ class LocalOnnxVisionModel {
             throw new Error('Could not create ONNX preprocessing canvas');
         }
 
+        // YuNet is trained for an image with preserved geometry. Stretching a
+        // 16:9 browser screenshot into a 640x640 square distorts faces and can
+        // significantly reduce detection quality. Letterbox instead.
+        ctx.fillStyle = '#000000';
+        ctx.fillRect(0, 0, this.inputWidth, this.inputHeight);
+
         const scale = Math.min(
             this.inputWidth / canvas.width,
             this.inputHeight / canvas.height
         );
 
-        const resizedWidth = Math.max(
-            1,
-            Math.round(canvas.width * scale)
-        );
-        const resizedHeight = Math.max(
-            1,
-            Math.round(canvas.height * scale)
-        );
-
-        const offsetX = Math.floor(
-            (this.inputWidth - resizedWidth) / 2
-        );
-        const offsetY = Math.floor(
-            (this.inputHeight - resizedHeight) / 2
-        );
-
-        ctx.fillStyle = '#114F3A';
-        ctx.fillRect(
-            0,
-            0,
-            this.inputWidth,
-            this.inputHeight
-        );
+        const resizedWidth = Math.max(1, Math.round(canvas.width * scale));
+        const resizedHeight = Math.max(1, Math.round(canvas.height * scale));
+        const offsetX = Math.floor((this.inputWidth - resizedWidth) / 2);
+        const offsetY = Math.floor((this.inputHeight - resizedHeight) / 2);
 
         ctx.drawImage(
             canvas,
@@ -232,29 +356,236 @@ class LocalOnnxVisionModel {
         const planeSize = this.inputWidth * this.inputHeight;
         const tensor = new Float32Array(planeSize * 3);
 
+        // OpenCV YuNet consumes BGR pixels in the original 0-255 range.
+        // Canvas provides RGBA, so convert RGB -> BGR.
         for (let y = 0; y < this.inputHeight; y++) {
             for (let x = 0; x < this.inputWidth; x++) {
-                const sourceIndex =
-                    (y * this.inputWidth + x) * 4;
-                const targetIndex =
-                    y * this.inputWidth + x;
+                const sourceIndex = (y * this.inputWidth + x) * 4;
+                const targetIndex = y * this.inputWidth + x;
 
-                tensor[targetIndex] =
-                    source[sourceIndex] / 255;
-                tensor[planeSize + targetIndex] =
-                    source[sourceIndex + 1] / 255;
-                tensor[(planeSize * 2) + targetIndex] =
-                    source[sourceIndex + 2] / 255;
+                const r = source[sourceIndex];
+                const g = source[sourceIndex + 1];
+                const b = source[sourceIndex + 2];
+
+                tensor[targetIndex] = b;
+                tensor[planeSize + targetIndex] = g;
+                tensor[(planeSize * 2) + targetIndex] = r;
             }
+        }
+
+        if (!this.loggedInferenceDiagnostics) {
+            Logger.log('VISION', 'YuNet preprocessing geometry', {
+                source: {
+                    width: canvas.width,
+                    height: canvas.height
+                },
+                model: {
+                    width: this.inputWidth,
+                    height: this.inputHeight
+                },
+                scale,
+                resizedWidth,
+                resizedHeight,
+                offsetX,
+                offsetY
+            });
         }
 
         return {
             tensor,
             scale,
             offsetX,
-            offsetY,
-            resizedWidth,
-            resizedHeight
+            offsetY
+        };
+    }
+
+    parseYuNetOutputs(outputs, canvasWidth, canvasHeight, preprocessInfo) {
+        const detections = [];
+        const strideDiagnostics = [];
+        const strides = [8, 16, 32];
+
+        const outputEntries = Object.entries(outputs);
+        const outputByName = new Map(
+            outputEntries.map(([name, tensor]) => [name, tensor])
+        );
+
+        if (!this.loggedInferenceDiagnostics) {
+            Logger.log(
+                'VISION',
+                'YuNet output tensors',
+                outputEntries.map(([name, tensor]) => ({
+                    name,
+                    dims: tensor?.dims || null,
+                    length: tensor?.data?.length || 0
+                }))
+            );
+        }
+
+        for (const stride of strides) {
+            const clsTensor = outputByName.get(`cls_${stride}`);
+            const objTensor = outputByName.get(`obj_${stride}`);
+            const bboxTensor = outputByName.get(`bbox_${stride}`);
+            const kpsTensor = outputByName.get(`kps_${stride}`);
+
+            if (!clsTensor || !objTensor || !bboxTensor || !kpsTensor) {
+                Logger.warn(
+                    'VISION',
+                    `YuNet outputs missing for stride ${stride}`
+                );
+                continue;
+            }
+
+            const cls = clsTensor.data;
+            const obj = objTensor.data;
+            const bbox = bboxTensor.data;
+            const kps = kpsTensor.data;
+
+            const gridWidth = Math.ceil(this.inputWidth / stride);
+            const gridHeight = Math.ceil(this.inputHeight / stride);
+            const expectedCount = gridWidth * gridHeight;
+            const count = Math.min(
+                expectedCount,
+                cls.length,
+                obj.length,
+                Math.floor(bbox.length / 4),
+                Math.floor(kps.length / 10)
+            );
+
+            let maxConfidence = 0;
+            let aboveThreshold = 0;
+
+            for (let index = 0; index < count; index++) {
+                let clsScore = Number(cls[index]);
+                let objScore = Number(obj[index]);
+
+                if (!Number.isFinite(clsScore) ||
+                    !Number.isFinite(objScore)) {
+                    continue;
+                }
+
+                clsScore = Math.max(0, Math.min(1, clsScore));
+                objScore = Math.max(0, Math.min(1, objScore));
+
+                const confidence = Math.sqrt(clsScore * objScore);
+                maxConfidence = Math.max(maxConfidence, confidence);
+
+                if (confidence < this.confidenceThreshold) {
+                    continue;
+                }
+
+                aboveThreshold++;
+
+                const row = Math.floor(index / gridWidth);
+                const column = index % gridWidth;
+                const bboxOffset = index * 4;
+
+                const cx =
+                    (column + Number(bbox[bboxOffset])) * stride;
+                const cy =
+                    (row + Number(bbox[bboxOffset + 1])) * stride;
+                const width =
+                    Math.exp(Number(bbox[bboxOffset + 2])) * stride;
+                const height =
+                    Math.exp(Number(bbox[bboxOffset + 3])) * stride;
+
+                if (![cx, cy, width, height].every(Number.isFinite) ||
+                    width <= 0 || height <= 0) {
+                    continue;
+                }
+
+                const modelLeft = cx - width / 2;
+                const modelTop = cy - height / 2;
+                const modelRight = cx + width / 2;
+                const modelBottom = cy + height / 2;
+
+                // Undo the letterbox transform so boxes line up with the
+                // original browser screenshot.
+                const scale = preprocessInfo?.scale || 1;
+                const offsetX = preprocessInfo?.offsetX || 0;
+                const offsetY = preprocessInfo?.offsetY || 0;
+
+                const left = (modelLeft - offsetX) / scale;
+                const top = (modelTop - offsetY) / scale;
+                const scaledWidth = (modelRight - modelLeft) / scale;
+                const scaledHeight = (modelBottom - modelTop) / scale;
+
+                const clipped = this.clipToCanvas(
+                    canvasWidth,
+                    canvasHeight,
+                    left,
+                    top,
+                    scaledWidth,
+                    scaledHeight
+                );
+
+                if (clipped.width <= 0 || clipped.height <= 0) {
+                    continue;
+                }
+
+                const landmarks = [];
+                const kpsOffset = index * 10;
+
+                for (let point = 0; point < 5; point++) {
+                    landmarks.push({
+                        x: (
+                            (Number(kps[kpsOffset + point * 2]) + column) * stride - offsetX
+                        ) / scale,
+                        y: (
+                            (Number(kps[kpsOffset + point * 2 + 1]) + row) * stride - offsetY
+                        ) / scale
+                    });
+                }
+
+                detections.push({
+                    classId: 0,
+                    className: 'face',
+                    label: 'face',
+                    confidence,
+                    bbox: clipped,
+                    landmarks
+                });
+            }
+            strideDiagnostics.push({
+                stride,
+                expectedCount,
+                actualCount: count,
+                maxConfidence: Number(maxConfidence.toFixed(4)),
+                aboveThreshold
+            });
+        }
+
+        const finalDetections = this.nonMaximumSuppression(
+            detections,
+            this.nmsThreshold
+        ).slice(0, this.topK);
+
+        if (!this.loggedInferenceDiagnostics) {
+            Logger.log('VISION', 'YuNet inference diagnostics', {
+                strideDiagnostics,
+                rawCandidates: detections.length,
+                finalDetections: finalDetections.map(d => ({
+                    confidence: Number(d.confidence.toFixed(4)),
+                    bbox: d.bbox
+                }))
+            });
+            this.loggedInferenceDiagnostics = true;
+        }
+
+        return finalDetections;
+    }
+
+
+    clipToCanvas(canvasWidth, canvasHeight, x, y, width, height) {
+        const left = Math.max(0, x);
+        const top = Math.max(0, y);
+        const right = Math.min(canvasWidth, x + width);
+        const bottom = Math.min(canvasHeight, y + height);
+
+        return {
+            x: left,
+            y: top,
+            width: Math.max(0, right - left),
+            height: Math.max(0, bottom - top)
         };
     }
 
@@ -264,6 +595,15 @@ class LocalOnnxVisionModel {
         canvasHeight,
         preprocessInfo
     ) {
+        if (this.modelType === 'yunet') {
+            return this.parseYuNetOutputs(
+                outputs,
+                canvasWidth,
+                canvasHeight,
+                preprocessInfo
+            );
+        }
+
         const detections = [];
 
         for (const [outputName, output] of Object.entries(outputs)) {
@@ -433,7 +773,7 @@ class LocalOnnxVisionModel {
         return this.nonMaximumSuppression(detections);
     }
 
-    nonMaximumSuppression(detections) {
+    nonMaximumSuppression(detections, threshold = 0.45) {
         const sorted = [...detections].sort(
             (a, b) => b.confidence - a.confidence
         );
@@ -444,7 +784,7 @@ class LocalOnnxVisionModel {
             kept.push(current);
 
             for (let i = sorted.length - 1; i >= 0; i--) {
-                if (this.iou(current.bbox, sorted[i].bbox) > 0.45) {
+                if (this.iou(current.bbox, sorted[i].bbox) > threshold) {
                     sorted.splice(i, 1);
                 }
             }
@@ -479,8 +819,8 @@ class LocalOnnxVisionModel {
 
 
 /**
- * Integrate the local detector into the existing VisionProcessor.
- * The existing DOM/feature pipeline remains intact.
+ * Integrate the local face detector into the existing VisionProcessor.
+ * DOM/regex privacy detection remains the first deterministic layer.
  */
 (() => {
     if (typeof VisionProcessor === 'undefined') {

@@ -18,6 +18,7 @@ import base64
 import logging
 import asyncio
 import uuid
+import re
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta
 from io import BytesIO
@@ -49,11 +50,18 @@ GROQ_MODEL = os.getenv('GROQ_MODEL', 'mixtral-8x7b-32768')
 SERVER_HOST = os.getenv('SERVER_HOST', '0.0.0.0')
 SERVER_PORT = int(os.getenv('SERVER_PORT', '8000'))
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
-CORS_ORIGINS = os.getenv('CORS_ORIGINS', 'http://localhost:3000,chrome-extension://*').split(',')
+CORS_ORIGINS = [
+    origin.strip()
+    for origin in ('http://localhost:3000,https://meet.google.com,https://github.com,https://drive.google.com,https://mail.google.com,http://0.0.0.0:5000,https://unstop.com').split(',')
+    if origin.strip()
+]
 MAX_AGENT_STEPS = int(os.getenv('MAX_AGENT_STEPS', '20'))
 ACTION_TIMEOUT = int(os.getenv('ACTION_TIMEOUT', '30000'))  # ms
 AGENT_TIMEOUT = int(os.getenv('AGENT_TIMEOUT', '60000'))   # ms
 MIN_REDACTION_COVERAGE = float(os.getenv('MIN_REDACTION_COVERAGE', '0.8'))
+MAX_SAVED_SCREENSHOT_BYTES = int(os.getenv('MAX_SAVED_SCREENSHOT_BYTES', str(10 * 1024 * 1024)))
+SAVED_SCREENSHOT_DIR = os.path.join(os.path.dirname(__file__), 'saved_images')
+os.makedirs(SAVED_SCREENSHOT_DIR, exist_ok=True)
 
 # Setup logging
 logging.basicConfig(
@@ -125,6 +133,17 @@ class ErrorCode(str, Enum):
     MAX_STEPS_EXCEEDED = "max_steps_exceeded"
     NAVIGATION_DETECTED = "navigation_detected"
     EXECUTION_ERROR = "execution_error"
+    OUTSIDE_VIEWPORT = "outside_viewport"
+    COVERED_ELEMENT = "covered_element"
+    NON_INTERACTIVE_ELEMENT = "non_interactive_element"
+    NOT_ACTIONABLE = "not_actionable"
+    INVALID_ELEMENT = "invalid_element"
+    DETACHED_ELEMENT = "detached_element"
+    ZERO_SIZE_ELEMENT = "zero_size_element"
+    DISABLED_ELEMENT = "disabled_element"
+    ARIA_DISABLED_ELEMENT = "aria_disabled_element"
+    INERT_ELEMENT = "inert_element"
+    READONLY_ELEMENT = "readonly_element"
 
 
 # ============================================================================
@@ -153,6 +172,9 @@ class ElementMetadata(BaseModel):
     interactive: bool = False
     sensitive: bool = False
     sensitive_type: Optional[str] = None  # "password", "email", "credit_card", etc.
+    value_present: bool = False  # Safe state only; never contains the actual value
+    selected_option: Optional[str] = None  # Non-sensitive select label
+    available_options: Optional[List[str]] = None  # Non-sensitive select labels
     bbox: BoundingBox
     
     class Config:
@@ -170,6 +192,7 @@ class PageObservation(BaseModel):
     timestamp: datetime = Field(default_factory=datetime.utcnow)
     elements: List[ElementMetadata]
     screenshot_available: bool = False
+    visual_context: Optional[Dict[str, Any]] = None
     
     class Config:
         use_enum_values = True
@@ -181,6 +204,8 @@ class Action(BaseModel):
     type: ActionType
     element_id: Optional[str] = None  # Must match an agent_element_id from observation
     text: Optional[str] = None  # For TYPE action
+    value: Optional[str] = None  # For SELECT; never use for sensitive fields
+    label: Optional[str] = None  # For SELECT; preferred human-readable option label
     direction: Optional[str] = None  # For SCROLL: "up", "down", "left", "right"
     amount: Optional[int] = None  # For SCROLL: pixels
     duration_ms: Optional[int] = None  # For WAIT: milliseconds
@@ -192,11 +217,15 @@ class Action(BaseModel):
     class Config:
         use_enum_values = True
     
-    @field_validator('type')
+    @field_validator('type', mode='before')
+    @classmethod
     def validate_type(cls, v):
+        if isinstance(v, ActionType):
+            return v
         if isinstance(v, str):
+            normalized = v.strip().lower()
             try:
-                return ActionType(v.lower())
+                return ActionType(normalized)
             except ValueError:
                 raise ValueError(f"Invalid action type: {v}")
         return v
@@ -220,11 +249,29 @@ class AgentMessage(BaseModel):
 
 
 class GroqResponse(BaseModel):
-    """Structured response from Groq"""
+    """Structured response from Groq.
+
+    Groq output is normalized at the API boundary so status values such as
+    "continue", "Continue", and "CONTINUE" are treated identically.
+    """
     status: str  # "CONTINUE", "FINISHED", "FAILED"
     reasoning_summary: str
     action: Optional[Action] = None
     message: Optional[str] = None
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def normalize_status(cls, value):
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            status_map = {
+                "continue": "CONTINUE",
+                "finished": "FINISHED",
+                "failed": "FAILED",
+            }
+            if normalized in status_map:
+                return status_map[normalized]
+        return value
 
 
 # ============================================================================
@@ -266,7 +313,6 @@ class AgentSession:
         self.current_observation = observation
         self.page_revision += 1
         self.last_activity = datetime.utcnow()
-        print("Observations: ", observation.elements)
         logger.info(f"[{self.session_id}] Observation recorded: {len(observation.elements)} elements")
     
     def add_action(self, action: Action):
@@ -364,13 +410,17 @@ CRITICAL RULES:
 7. Never request or attempt to use passwords, credit cards, or sensitive data.
 8. Stop when the user's goal is accomplished.
 9. Always verify your observations before acting.
+10. Never infer that a required control is already in the desired state merely because it is absent, redacted, or not immediately visible. For required controls such as microphone, camera, mute, or toggles, re-observe or use an explicitly labeled control before proceeding.
+11. When the user asks for a destination inside a site's settings, prefer that site's settings/navigation destination rather than a similarly named global/public destination.
+11. When choosing a navigation URL, use the current site's actual links and page context when available. Do not assume a site-specific URL pattern unless it is present in the observation or clearly established by the site.
+12. For navigation actions, always put the destination in the "url" field, never in "text".
 
 SUPPORTED ACTION TYPES:
 - click: Click on an element
 - type: Type text into a focused input (never passwords from server)
 - clear: Clear an input field
 - focus: Focus an element
-- select: Select option in dropdown (provide text or value)
+- select: Select an option in a dropdown. ALWAYS provide "label" (or "value") for the requested option.
 - scroll: Scroll page (direction: up/down/left/right, amount in pixels)
 - press_key: Press keyboard key (Enter, Tab, Escape, etc.)
 - hover: Hover over element
@@ -389,6 +439,8 @@ Always respond with valid JSON matching this format:
         "type": "ACTION_TYPE",
         "element_id": "agent-el-123" (if needed),
         "text": "..." (for TYPE),
+        "value": "..." (for SELECT when needed),
+        "label": "..." (for SELECT; preferred),
         "direction": "..." (for SCROLL),
         "amount": 500 (for SCROLL),
         "reason": "Why this action"
@@ -410,8 +462,7 @@ For FAILED: Explain what couldn't be accomplished.
         observation: PageObservation,
         action_result: Optional[ActionResult] = None
     ) -> GroqResponse:
-        """Reason about next action using Groq"""
-        
+        """Reason about the next action using the current state and recent history."""
         if not self.client:
             self.logger.error("Groq client not initialized")
             return GroqResponse(
@@ -419,60 +470,89 @@ For FAILED: Explain what couldn't be accomplished.
                 reasoning_summary="Groq API not configured",
                 message="Groq API key is not set in environment"
             )
-        
+
         try:
-            # Build observation text for LLM
             observation_text = self._format_observation(observation)
-            
-            # Build previous result if exists
+
             result_text = ""
             if action_result:
-                result_text = f"\n\nPREVIOUS ACTION RESULT:\nAction: {session.action_history[-1].type}\nSuccess: {action_result.success}\nError: {action_result.error_message}\n"
-            
-            # Build user message
-            user_message = f"""
-USER GOAL: {session.user_goal}
+                previous_action = session.action_history[-1] if session.action_history else None
+                previous_name = previous_action.type if previous_action else "unknown"
+                previous_target = previous_action.element_id if previous_action else "none"
+                result_text = (
+                    f"PREVIOUS ACTION RESULT: Action={previous_name} | "
+                    f"Target={previous_target} | "
+                    f"Success={action_result.success} | "
+                    f"Error={self._clean_text(action_result.error_message or 'none')}"
+                )
 
-CURRENT PAGE STATE:
-{observation_text}
+            recent_history = []
+            start = max(0, len(session.action_history) - 6)
+            for index in range(start, len(session.action_history)):
+                action = session.action_history[index]
+                result = (
+                    session.action_results[index]
+                    if index < len(session.action_results)
+                    else None
+                )
+                recent_history.append(
+                    f"{index + 1}. {action.type} target={action.element_id or '-'} "
+                    f"success={result.success if result else 'pending'}"
+                )
 
-{result_text}
+            history_text = " ".join(recent_history) if recent_history else "none"
 
-HISTORY: {len(session.action_history)} actions taken so far.
+            user_message = (
+                f"USER GOAL: {self._clean_text(session.user_goal)}"
+                f"CURRENT PAGE STATE:{observation_text}"
+                f"{result_text}"
+                f"RECENT ACTION HISTORY:{history_text}"
+                f"DECISION RULES:"
+                f"- Continue the SAME task across multiple actions until the goal is complete."
+                f"- A successful action is already done. Do NOT repeat the same successful action on the same target."
+                f"- For any input, textarea, or select, VALUE_PRESENT=true means that field already contains a value; do not issue another TYPE action for that target unless the task explicitly requires replacing or clearing it."
+                f"- For a select, choose the requested option using its available_options and return label or value."
+                f"- After filling required fields, perform the next required action such as selecting an option or clicking Sign In."
+                f"- Return FINISHED only after the user's goal is actually accomplished."
+                f"What is the next action?"
+            )
+            user_message = "".join(
+                line.strip()
+                for line in user_message.splitlines()
+                if line.strip()
+            )
 
-What is the next action you should take to accomplish the goal?
-"""
-            
-            # Add to conversation history
-            # session.conversation_history.append(AgentMessage(role="user", content=user_message))
+            print("User Message")
+            print(user_message)
+
             messages = [
                 {"role": "system", "content": self.SYSTEM_PROMPT},
                 {"role": "user", "content": user_message}
             ]
-            # Call Groq API
+
             response = self.client.chat.completions.create(
                 model=GROQ_MODEL,
                 messages=messages,
-                temperature=0.3,  # Lower temperature for reliability
-                max_tokens=1000,
+                temperature=0.15,
+                max_tokens=800,
                 response_format={"type": "json_object"}
             )
-            
-            # Parse response
+
             response_text = response.choices[0].message.content
             response_json = json.loads(response_text)
-            print("Response Json")
-            print(response_json)
-            # Validate response
+            logger.debug(
+                "[%s] Groq response parsed: status=%s action=%s",
+                session.session_id,
+                response_json.get("status"),
+                (response_json.get("action") or {}).get("type")
+            )
+
             groq_response = GroqResponse(**response_json)
-            
-            # Add to conversation history
-            # session.conversation_history.append(AgentMessage(role="assistant", content=response_text))
-            
-            self.logger.info(f"[{session.session_id}] Groq reasoning: {groq_response.reasoning_summary}")
-            
+            self.logger.info(
+                f"[{session.session_id}] Groq reasoning: {groq_response.reasoning_summary}"
+            )
             return groq_response
-        
+
         except json.JSONDecodeError as e:
             self.logger.error(f"Failed to parse Groq JSON response: {e}")
             return GroqResponse(
@@ -487,54 +567,62 @@ What is the next action you should take to accomplish the goal?
                 reasoning_summary="Groq API error",
                 message=f"Error: {str(e)}"
             )
-    
-    def _format_observation(self, observation: PageObservation) -> str:
-        """Format rich browser observation for agent reasoning"""
 
+    def _clean_text(self, value: Any, max_length: int = 200) -> str:
+        """Safely normalize text included in LLM prompts."""
+        if value is None:
+            return ""
+        text = str(value).replace("\n", " ").replace("\r", " ").replace("\t", " ")
+        text = " ".join(text.split())
+        return text[:max_length]
+
+    def _format_observation(self, observation: PageObservation) -> str:
+        """Format current interactive state without exposing sensitive values."""
         lines = [
-            f"URL: {observation.url}",
-            f"TITLE: {observation.title}",
+            f"URL: {self._clean_text(observation.url)}",
+            f"TITLE: {self._clean_text(observation.title)}",
             f"VIEWPORT: {observation.viewport_width}x{observation.viewport_height}",
             f"ELEMENT COUNT: {len(observation.elements)}",
-            "",
-            "AVAILABLE INTERACTIVE ELEMENTS:",
+            "AVAILABLE INTERACTIVE ELEMENTS (MAX 40):",
         ]
 
-        for elem in observation.elements:
-            if not elem.interactive:
-                continue
+        interactive = [elem for elem in observation.elements if elem.interactive]
+        interactive.sort(key=lambda elem: (not elem.visible, elem.agent_element_id))
 
+        for elem in interactive[:40]:
             parts = [
-                f"ID={elem.agent_element_id}",
-                f"TAG=<{elem.tag}>",
+                f"ID={self._clean_text(elem.agent_element_id, 40)}",
+                f"TAG=<{self._clean_text(elem.tag, 30)}>",
+                f"VISIBLE={elem.visible}",
+                f"ENABLED={elem.enabled}",
             ]
-
             if elem.role:
-                parts.append(f"ROLE={elem.role}")
-
+                parts.append(f"ROLE={self._clean_text(elem.role, 40)}")
             if elem.element_type:
-                parts.append(f"TYPE={elem.element_type}")
-
+                parts.append(f"TYPE={self._clean_text(elem.element_type, 30)}")
             if elem.text_preview:
-                parts.append(f"TEXT=\"{elem.text_preview[:100]}\"")
-
+                parts.append(f"TEXT=\"{self._clean_text(elem.text_preview, 60)}\"")
             if elem.placeholder:
-                parts.append(f"PLACEHOLDER=\"{elem.placeholder[:100]}\"")
-
+                parts.append(f"PLACEHOLDER=\"{self._clean_text(elem.placeholder, 60)}\"")
             if elem.aria_label:
-                parts.append(f"ARIA_LABEL=\"{elem.aria_label[:100]}\"")
-
-            parts.append(f"VISIBLE={elem.visible}")
-            parts.append(f"ENABLED={elem.enabled}")
-
+                parts.append(f"ARIA=\"{self._clean_text(elem.aria_label, 60)}\"")
             if elem.sensitive:
-                parts.append(
-                    f"SENSITIVE={elem.sensitive_type or 'unknown'}"
-                )
+                parts.append(f"SENSITIVE={self._clean_text(elem.sensitive_type or 'unknown', 30)}")
+            if elem.tag.lower() in {"input", "textarea", "select"}:
+                parts.append(f"VALUE_PRESENT={elem.value_present}")
+                parts.append(f"INPUT_STATE={'filled' if elem.value_present else 'empty'}")
+            if elem.tag.lower() == "select":
+                parts.append(f"SELECTED=\"{self._clean_text(elem.selected_option or 'none', 80)}\"")
+                options = elem.available_options or []
+                if options:
+                    parts.append(
+                        "OPTIONS=\"" +
+                        self._clean_text(", ".join(options), 300) +
+                        "\""
+                    )
+            lines.append("- " + " | ".join(parts))
 
-            lines.append("  - " + " | ".join(parts))
-
-        return "\n".join(lines)
+        return " ".join(lines)
 
 # ============================================================================
 # PRIVACY PROTECTION
@@ -630,11 +718,8 @@ app = FastAPI(
 # Configure CORS carefully
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://github.com",
-        "https://www.github.com",
-    ],
-    allow_origin_regex=r"chrome-extension://.*|moz-extension://.*", 
+    allow_origins=CORS_ORIGINS,
+    allow_origin_regex=r"^(chrome-extension|moz-extension)://[a-z0-9]+$",
     allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization"],
@@ -673,6 +758,7 @@ class GetActionResponse(BaseModel):
     """Next action for browser to execute"""
     success: bool
     action: Optional[Action] = None
+    reasoning_summary: Optional[str] = None
     error_code: Optional[ErrorCode] = None
     error_message: Optional[str] = None
     session_status: str
@@ -681,6 +767,98 @@ class GetActionResponse(BaseModel):
 # ============================================================================
 # API ENDPOINTS
 # ============================================================================
+
+class ProcessScreenRequest(BaseModel):
+    """Redacted screenshot payload from the browser extension."""
+    screenshot: Any
+    pageStructure: Optional[Dict[str, Any]] = None
+    redactionMask: Optional[Dict[str, Any]] = None
+    sessionId: Optional[str] = None
+
+
+def _extract_screenshot_base64(screenshot: Any) -> tuple[str, str]:
+    """Extract a data URL/raw Base64 string from the extension screenshot payload."""
+    if isinstance(screenshot, dict):
+        screenshot = screenshot.get("data")
+
+    if not isinstance(screenshot, str) or not screenshot.strip():
+        raise ValueError("Screenshot data is missing")
+
+    value = screenshot.strip()
+    match = re.match(r"^data:(image/(?:jpeg|jpg|png|webp));base64,(.+)$", value, re.IGNORECASE | re.DOTALL)
+    if match:
+        return match.group(1).lower(), match.group(2)
+
+    return "image/jpeg", value
+
+
+def _save_redacted_screenshot(screenshot: Any) -> str:
+    """Decode and save a redacted screenshot without logging its contents."""
+    mime_type, encoded = _extract_screenshot_base64(screenshot)
+
+    try:
+        image_bytes = base64.b64decode(encoded, validate=True)
+    except Exception as exc:
+        raise ValueError("Invalid Base64 screenshot data") from exc
+
+    if not image_bytes:
+        raise ValueError("Decoded screenshot is empty")
+
+    if len(image_bytes) > MAX_SAVED_SCREENSHOT_BYTES:
+        raise ValueError("Screenshot exceeds the configured size limit")
+
+    try:
+        image = Image.open(BytesIO(image_bytes))
+        image.verify()
+        image_format = (image.format or "").upper()
+    except Exception as exc:
+        raise ValueError("Decoded data is not a valid image") from exc
+
+    extension = {
+        "JPEG": ".jpg",
+        "PNG": ".png",
+        "WEBP": ".webp",
+    }.get(image_format)
+
+    if extension is None:
+        raise ValueError("Unsupported screenshot image format")
+
+    filename = f"redacted_{uuid.uuid4().hex}{extension}"
+    output_path = os.path.join(SAVED_SCREENSHOT_DIR, filename)
+
+    with open(output_path, "wb") as output_file:
+        output_file.write(image_bytes)
+
+    logger.info(
+        "Saved redacted screenshot: filename=%s mime=%s bytes=%d",
+        filename,
+        mime_type,
+        len(image_bytes),
+    )
+    return filename
+
+
+@app.post("/api/process-screen")
+async def process_screen(request: ProcessScreenRequest):
+    """
+    Receive the locally-redacted screenshot and save the reconstructed image
+    on the server for inspection/debugging.
+    """
+    try:
+        filename = _save_redacted_screenshot(request.screenshot)
+        return {
+            "success": True,
+            "commands": [],
+            "savedImage": filename,
+            "message": "Redacted screenshot decoded and saved"
+        }
+    except ValueError as exc:
+        logger.warning("Rejected screenshot payload: %s", exc)
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        logger.error("Failed to save redacted screenshot: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to save screenshot")
+
 
 @app.get("/health")
 async def health():
@@ -753,6 +931,26 @@ async def observe(request: ObserveRequest):
         # Record observation
         session.add_observation(request.observation)
         session.status = SessionStatus.OBSERVING
+
+        # The extension sends the locally-redacted image inside visual_context.
+        # Save it here before the observation is passed to Groq. The raw image
+        # is never logged or sent to Groq as part of the text prompt.
+        visual_context = request.observation.visual_context or {}
+        screenshot = visual_context.get("screenshot")
+        if screenshot:
+            try:
+                saved_filename = _save_redacted_screenshot(screenshot)
+                logger.info(
+                    "[%s] Redacted screenshot reconstructed and saved: %s",
+                    session.session_id,
+                    saved_filename
+                )
+            except ValueError as exc:
+                logger.warning(
+                    "[%s] Redacted screenshot could not be saved: %s",
+                    session.session_id,
+                    exc
+                )
         
         # Check for stop conditions
         if session.should_stop():
@@ -781,6 +979,7 @@ async def observe(request: ObserveRequest):
                     type=ActionType.FINISH,
                     reason=groq_response.message or "Task completed"
                 ),
+                reasoning_summary=groq_response.reasoning_summary,
                 session_status=session.status.value
             )
         
@@ -803,7 +1002,41 @@ async def observe(request: ObserveRequest):
             )
         
         action = groq_response.action
-        
+
+        # Normalize select labels against the current observation before sending
+        # the action to the browser. The LLM may return "UK", different casing,
+        # or surrounding whitespace even when the DOM exposes "United Kingdom".
+        if action.type == ActionType.SELECT and action.element_id:
+            current_element = next(
+                (
+                    element
+                    for element in request.observation.elements
+                    if element.agent_element_id == action.element_id
+                ),
+                None
+            )
+            if current_element and current_element.available_options:
+                requested = (action.label or action.value or "").strip().lower()
+                if requested:
+                    exact_option = next(
+                        (
+                            option
+                            for option in current_element.available_options
+                            if str(option).strip().lower() == requested
+                        ),
+                        None
+                    )
+                    if exact_option:
+                        action.label = exact_option
+                        action.value = None
+                    else:
+                        logger.warning(
+                            "[%s] LLM requested unavailable select option: %s; available=%s",
+                            session.session_id,
+                            requested,
+                            current_element.available_options
+                        )
+
         # Validate element reference if needed
         if action.element_id and action.type not in [ActionType.SCROLL, ActionType.WAIT, ActionType.NAVIGATE, ActionType.FINISH]:
             # Verify element exists in current observation
@@ -826,6 +1059,7 @@ async def observe(request: ObserveRequest):
         return GetActionResponse(
             success=True,
             action=action,
+            reasoning_summary=groq_response.reasoning_summary,
             session_status=session.status.value
         )
     

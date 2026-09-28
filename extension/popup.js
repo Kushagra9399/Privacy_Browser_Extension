@@ -12,11 +12,37 @@ class PopupController {
         this.maxSteps = 20;
         this.logs = [];
         this.maxLogs = 100;
+        this.startRequested = false;
+        this.agentStateHydrated = false;
 
+        this.popupPort = null;
         this.initializeUI();
+        this.connectPopupLifecycle();
         this.loadConfiguration();
         this.setupEventListeners();
         this.listenForAgentEvents();
+        this.listenForPrivacyDebug();
+        this.loadPrivacyDebug();
+        this.loadLatestAgentEvent();
+        this.loadAgentUiState();
+    }
+
+    connectPopupLifecycle() {
+        try {
+            this.popupPort = chrome.runtime.connect({ name: 'privacy-browser-popup' });
+
+            chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+                const tabId = tabs?.[0]?.id;
+                if (Number.isInteger(tabId)) {
+                    this.popupPort?.postMessage({
+                        type: 'popup_open',
+                        tabId
+                    });
+                }
+            });
+        } catch (error) {
+            console.debug('[POPUP] Lifecycle connection unavailable', error);
+        }
     }
 
     initializeUI() {
@@ -58,6 +84,7 @@ class PopupController {
             stepNumber: document.getElementById('stepNumber'),
             maxSteps: document.getElementById('maxSteps'),
             actionText: document.getElementById('actionText'),
+            reasoningText: document.getElementById('reasoningText'),
             statusBadge: document.getElementById('statusBadge'),
             errorCount: document.getElementById('errorCount'),
             errorInfoItem: document.getElementById('errorInfoItem'),
@@ -111,70 +138,269 @@ class PopupController {
         });
     }
 
+    listenForPrivacyDebug() {
+        chrome.runtime.onMessage.addListener((request) => {
+            if (request.type === 'privacy_debug_update' && request.record) {
+                this.renderPrivacyDebug(request.record);
+            }
+        });
+
+        const clearButton = document.getElementById('clearPrivacyDebug');
+        if (clearButton) {
+            clearButton.addEventListener('click', async () => {
+                await chrome.storage.session.remove('privacyDebugLastRequest');
+                this.renderPrivacyDebug(null);
+            });
+        }
+    }
+
+    async loadLatestAgentEvent() {
+        // Kept for compatibility with the previous persisted event key.
+        try {
+            const data = await chrome.storage.session.get('privacyDebugLastAgentEvent');
+            if (data.privacyDebugLastAgentEvent) {
+                this.applyAgentEvent(data.privacyDebugLastAgentEvent, false);
+            }
+        } catch (error) {
+            // Popup can still operate without persisted state.
+        }
+    }
+
+    async loadAgentUiState() {
+        try {
+            // Do not let the initial async state restore overwrite a run that
+            // the user started while the popup was initializing.
+            if (this.startRequested || this.agentRunning) return;
+            const response = await new Promise((resolve) => {
+                chrome.runtime.sendMessage({ type: 'get_agent_ui_state' }, resolve);
+            });
+
+            const state = response?.state;
+            if (!state) return;
+
+            this.currentSessionId = state.sessionId || null;
+            this.currentStep = Number(state.step || 0);
+            this.maxSteps = Number(state.maxSteps || 20);
+            this.agentRunning = !!state.running;
+
+            this.agentElements.userGoalInput.value = state.goal || '';
+
+            this.agentStateHydrated = true;
+
+            if (this.startRequested || this.agentRunning) return;
+
+            if (state.running || state.status !== 'idle') {
+                this.renderAgentState(state);
+
+                // Rebuild the visible activity history so reopening the popup
+                // does not make the agent appear to have started from scratch.
+                this.logs = [];
+                for (const event of (state.events || [])) {
+                    this.applyAgentEvent(event, true);
+                }
+            } else {
+                this.updateUIForAgentEnd();
+            }
+        } catch (error) {
+            // Background state is best-effort; never block the popup.
+        }
+    }
+
+    renderAgentState(state) {
+        this.agentElements.goalText.textContent = state.goal || '';
+        this.agentElements.stepNumber.textContent = String(state.step || 0);
+        this.agentElements.maxSteps.textContent = String(state.maxSteps || 20);
+        this.agentElements.actionText.textContent = state.action || 'Waiting for agent...';
+        this.agentElements.reasoningText.textContent =
+            state.reasoning || 'Waiting for agent reasoning...';
+        this.agentElements.errorCount.textContent = String(state.errors || 0);
+
+        const statusMap = {
+            running: ['Running', 'badge badge-running'],
+            completed: ['✓ Completed', 'badge badge-completed'],
+            stopped: ['⊘ Stopped', 'badge badge-stopped'],
+            failed: ['✗ Failed', 'badge badge-failed'],
+            idle: ['Idle', 'badge']
+        };
+        const [label, className] = statusMap[state.status] || statusMap.idle;
+        this.agentElements.statusBadge.textContent = label;
+        this.agentElements.statusBadge.className = className;
+
+        this.agentElements.userGoalSection.style.display =
+            state.running ? 'none' : 'block';
+        this.agentElements.agentStatusSection.style.display = 'block';
+        this.agentElements.startAgentBtn.disabled = !!state.running;
+        this.agentElements.stopAgentBtn.disabled = !state.running;
+        this.agentElements.errorInfoItem.style.display =
+            Number(state.errors || 0) > 0 ? 'block' : 'none';
+
+        if (state.events?.length) {
+            this.agentElements.agentLogContainer.innerHTML = '';
+        }
+    }
+
+    applyAgentEvent(event, writeLog = true) {
+        if (!event) return;
+
+        switch (event.type) {
+            case 'agent_started':
+                this.agentRunning = true;
+                this.agentElements.userGoalSection.style.display = 'none';
+                this.agentElements.agentStatusSection.style.display = 'block';
+                this.currentSessionId = event.session_id || this.currentSessionId;
+                this.agentRunning = true;
+                this.agentElements.goalText.textContent = event.goal || this.agentElements.goalText.textContent;
+                this.agentElements.maxSteps.textContent = String(event.max_steps || this.maxSteps);
+                this.agentElements.statusBadge.textContent = 'Running';
+                this.agentElements.statusBadge.className = 'badge badge-running';
+                break;
+            case 'agent_mode_selected':
+                break;
+            case 'step_started':
+                this.currentStep = event.step || this.currentStep;
+                this.agentElements.stepNumber.textContent = String(this.currentStep);
+                break;
+            case 'action_received':
+                this.agentElements.actionText.textContent =
+                    `${event.action_type || 'Action'}${event.reason ? ': ' + event.reason : ''}`;
+                this.agentElements.reasoningText.textContent =
+                    event.reasoning_summary || event.reason || 'No reasoning summary provided.';
+                break;
+            case 'action_executed':
+                this.agentElements.actionText.textContent = '✓ Executed';
+                break;
+            case 'action_failed':
+                this.agentElements.actionText.textContent = `✗ Failed: ${event.error_code || 'action error'}`;
+                this.agentElements.errorCount.textContent = String(event.error_count || 0);
+                this.agentElements.errorInfoItem.style.display = 'block';
+                break;
+            case 'agent_finished':
+                this.agentRunning = false;
+                this.agentElements.actionText.textContent = 'Completed';
+                this.agentElements.reasoningText.textContent = event.reason || this.agentElements.reasoningText.textContent;
+                break;
+            case 'agent_stopped':
+                this.agentRunning = false;
+                this.agentElements.actionText.textContent = 'Stopped';
+                break;
+            case 'agent_safety_stop':
+                this.agentRunning = false;
+                this.agentElements.actionText.textContent = 'Stopped for safety';
+                this.agentElements.reasoningText.textContent = event.message || this.agentElements.reasoningText.textContent;
+                break;
+            case 'agent_error_limit':
+                this.agentRunning = false;
+                this.agentElements.actionText.textContent = 'Error limit reached';
+                break;
+            case 'agent_ended':
+                this.agentRunning = false;
+                break;
+            case 'loop_error':
+                this.agentElements.reasoningText.textContent =
+                    event.error_message || this.agentElements.reasoningText.textContent;
+                break;
+        }
+
+        if (writeLog) {
+            if (event.type === 'step_started') {
+                this.addLog(`Step ${event.step}: Starting`, 'step', 'agent');
+            } else if (event.type === 'action_received') {
+                this.addLog(
+                    `Action: ${event.action_type}${event.reasoning_summary ? ' — ' + event.reasoning_summary : ''}`,
+                    'action',
+                    'agent'
+                );
+            }
+        }
+    }
+
+
+    async loadPrivacyDebug() {
+        try {
+            const data = await chrome.storage.session.get('privacyDebugLastRequest');
+            this.renderPrivacyDebug(data.privacyDebugLastRequest || null);
+        } catch (error) {
+            this.renderPrivacyDebug(null);
+        }
+    }
+
+    renderPrivacyDebug(record) {
+        const status = document.getElementById('privacyDebugStatus');
+        const summary = document.getElementById('privacyDebugSummary');
+        const json = document.getElementById('privacyDebugJson');
+        const image = document.getElementById('privacyDebugImage');
+        if (!status || !summary || !json || !image) return;
+
+        if (!record) {
+            status.textContent = 'Waiting for an outbound backend request...';
+            summary.innerHTML = '';
+            json.textContent = 'No request captured yet.';
+            image.removeAttribute('src');
+            return;
+        }
+
+        const observation = record.payload?.observation || {};
+        const visual = observation.visual_context || {};
+        const redactions = visual.redactionMask?.redactions || [];
+        const elements = observation.elements || [];
+        const sensitiveElements = elements.filter(item => item.sensitive);
+        const screenshot = visual.screenshot?.data || '';
+        const redactionMask = visual.redactionMask || {};
+        const maskRedactions = redactionMask.redactions || [];
+
+        status.textContent = `Captured ${record.endpoint} at ${new Date(record.timestamp).toLocaleTimeString()}`;
+        summary.innerHTML = `
+            <div><b>Payload size:</b> ${Number(record.bytes || 0).toLocaleString()} bytes</div>
+            <div><b>Elements sent:</b> ${elements.length}</div>
+            <div><b>Sensitive DOM elements:</b> ${sensitiveElements.length}</div>
+            <div><b>Visual redactions applied:</b> ${redactions.length}</div>
+            <div><b>Redaction mask received:</b> ${maskRedactions.length ? 'YES' : 'NO'}</div>
+            <div><b>Screenshot included:</b> ${screenshot ? 'YES — redacted image' : 'NO'}</div>
+            <div><b>Raw screenshot included:</b> NO</div>
+        `;
+
+        if (screenshot) {
+            image.src = screenshot;
+            image.style.display = 'block';
+        } else {
+            image.removeAttribute('src');
+            image.style.display = 'none';
+        }
+
+        json.textContent = JSON.stringify(record.payload, null, 2);
+    }
+
     /**
      * Handle events from the agent loop
      */
     handleAgentEvent(event) {
-        switch (event.type) {
-            case 'step_started':
-                this.currentStep = event.step;
-                this.updateStepDisplay();
-                this.addLog(`Step ${event.step}: Starting`, 'step', 'agent');
-                break;
+        this.applyAgentEvent(event, true);
 
-            case 'action_received':
-                this.agentElements.actionText.textContent = 
-                    `${event.action_type}${event.reason ? ': ' + event.reason : ''}`;
-                this.addLog(`Action: ${event.action_type}`, 'action', 'agent');
-                break;
-
-            case 'action_executed':
-                this.agentElements.actionText.textContent = '✓ Executed';
-                this.addLog(`Action executed (${event.duration_ms}ms)`, 'success', 'agent');
-                break;
-
-            case 'action_failed':
-                this.agentElements.actionText.textContent = `✗ Failed: ${event.error_code}`;
-                this.agentElements.errorInfoItem.style.display = 'block';
-                this.agentElements.errorCount.textContent = event.error_count;
-                this.addLog(`Action failed: ${event.error_code}`, 'error', 'agent');
-                break;
-
-            case 'agent_finished':
-                this.agentRunning = false;
-                this.updateUIForAgentEnd();
-                this.agentElements.statusBadge.textContent = '✓ Completed';
-                this.agentElements.statusBadge.className = 'badge badge-completed';
-                this.addLog(`Agent finished: ${event.reason}`, 'success', 'agent');
-                break;
-
-            case 'agent_error_limit':
-                this.agentRunning = false;
-                this.updateUIForAgentEnd();
-                this.agentElements.statusBadge.textContent = '✗ Error limit';
-                this.agentElements.statusBadge.className = 'badge badge-failed';
-                this.addLog(`Agent stopped: ${event.message}`, 'error', 'agent');
-                break;
-
-            case 'agent_stopped':
-                this.agentRunning = false;
-                this.updateUIForAgentEnd();
-                this.agentElements.statusBadge.textContent = '⊘ Stopped';
-                this.agentElements.statusBadge.className = 'badge badge-stopped';
-                this.addLog('Agent stopped by user', 'info', 'agent');
-                break;
-
-            case 'agent_ended':
-                this.addLog(
-                    `Agent session ended (${event.steps_taken} steps, ${event.errors} errors)`,
-                    'info',
-                    'agent'
-                );
-                break;
-
-            case 'loop_error':
-                this.addLog(`Error: ${event.error_message}`, 'error', 'agent');
-                break;
+        if (event.type === 'agent_finished' ||
+            event.type === 'agent_stopped' ||
+            event.type === 'agent_safety_stop' ||
+            event.type === 'agent_error_limit' ||
+            event.type === 'agent_ended') {
+            this.agentRunning = false;
+            this.updateUIForAgentEnd();
+            this.renderAgentState({
+                ...event,
+                goal: this.agentElements.goalText.textContent,
+                step: this.currentStep,
+                maxSteps: this.maxSteps,
+                status:
+                    event.type === 'agent_finished' ? 'completed' :
+                    event.type === 'agent_error_limit' ? 'failed' : 'stopped',
+                action: this.agentElements.actionText.textContent,
+                reasoning: this.agentElements.reasoningText.textContent,
+                errors: Number(this.agentElements.errorCount.textContent || 0)
+            });
+        } else if (event.type === 'agent_started' || event.type === 'step_started' || event.type === 'action_received') {
+            this.agentRunning = true;
+            this.agentElements.userGoalSection.style.display = 'none';
+            this.agentElements.agentStatusSection.style.display = 'block';
+            this.agentElements.stopAgentBtn.disabled = false;
+            this.agentElements.startAgentBtn.disabled = true;
         }
     }
 
@@ -213,7 +439,9 @@ class PopupController {
 
             this.currentSessionId = response.session_id;
             this.agentRunning = true;
+            this.startRequested = true;
             this.currentStep = 0;
+
             this.agentElements.errorCount.textContent = '0';
             this.agentElements.errorInfoItem.style.display = 'none';
 
@@ -223,6 +451,7 @@ class PopupController {
             this.addLog(`Session created: ${this.currentSessionId}`, 'success', 'agent');
 
         } catch (error) {
+            this.startRequested = false;
             alert(`Failed to start agent: ${error.message}`);
             this.addLog(`Error: ${error.message}`, 'error', 'agent');
         }
@@ -260,6 +489,9 @@ class PopupController {
         
         this.agentElements.goalText.textContent = this.agentElements.userGoalInput.value;
         this.agentElements.actionText.textContent = 'Initializing...';
+        if (this.agentElements.reasoningText) {
+            this.agentElements.reasoningText.textContent = 'Waiting for agent reasoning...';
+        }
         this.agentElements.statusBadge.textContent = 'Running';
         this.agentElements.statusBadge.className = 'badge badge-running';
         
@@ -276,13 +508,13 @@ class PopupController {
      */
     updateUIForAgentEnd() {
         this.agentElements.userGoalSection.style.display = 'block';
-        this.agentElements.agentStatusSection.style.display = 'none';
-        
+        this.agentElements.agentStatusSection.style.display = 'block';
+
         this.agentElements.startAgentBtn.disabled = false;
         this.agentElements.stopAgentBtn.disabled = true;
 
-        // User can start another goal
-        this.agentElements.userGoalInput.focus();
+        // Keep the previous goal visible so reopening the popup never looks like
+        // a fresh/reset session.
     }
 
     /**
@@ -386,7 +618,7 @@ class PopupController {
         chrome.storage.sync.get({
             SERVER_URL: 'http://localhost:8000',
             ENABLE_REDACTION: true,
-            REDACTION_MODE: 'blur'
+            REDACTION_MODE: 'black'
         }, (items) => {
             this.legacyElements.serverUrl.value = items.SERVER_URL;
             this.legacyElements.enableRedaction.checked = items.ENABLE_REDACTION;

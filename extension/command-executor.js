@@ -63,18 +63,40 @@ class CommandExecutor {
     }
 
     async executePressKey(element, key) {
-        if (!element) throw new Error('Target element not found');
-        element.focus();
-        element.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
-        element.dispatchEvent(new KeyboardEvent('keyup', { key, bubbles: true, cancelable: true }));
-        return { pressed: true, key };
+        // press_key may intentionally omit element_id because it should act
+        // on the element that currently has keyboard focus.
+        const target = element || document.activeElement || document.body;
+        if (!target) throw new Error('No keyboard target available');
+
+        if (typeof target.focus === 'function' && target !== document.body) {
+            target.focus();
+        }
+
+        target.dispatchEvent(new KeyboardEvent('keydown', {
+            key,
+            bubbles: true,
+            cancelable: true
+        }));
+        target.dispatchEvent(new KeyboardEvent('keyup', {
+            key,
+            bubbles: true,
+            cancelable: true
+        }));
+
+        return {
+            pressed: true,
+            key,
+            target: target === document.body ? 'document.body' : target.tagName
+        };
     }
 
     async executeNavigate(url) {
-        if (!url) throw new Error('Navigation URL is required');
-        window.location.assign(url);
+        const navigationUrl = url || this.pendingNavigationUrl;
+        Logger.log('EXECUTOR', 'Executing navigation', { url, resolvedUrl: navigationUrl });
+        if (!navigationUrl) throw new Error('Navigation URL is required');
+        window.location.assign(navigationUrl);
         await this.wait(500);
-        return { navigated: true, url };
+        return { navigated: true, url: navigationUrl };
     }
 
     async executeHistory(direction) {
@@ -132,14 +154,31 @@ class CommandExecutor {
 
         if (!element) throw new Error(`Element not found for click: ${JSON.stringify(command)}`);
 
+        const initialRect = element.getBoundingClientRect();
+        const initialCenterX = initialRect.left + initialRect.width / 2;
+        const initialCenterY = initialRect.top + initialRect.height / 2;
+        const outsideViewport =
+            initialCenterX < 0 ||
+            initialCenterY < 0 ||
+            initialCenterX > window.innerWidth ||
+            initialCenterY > window.innerHeight;
+
+        if (outsideViewport) {
+            element.scrollIntoView({ behavior: 'auto', block: 'center', inline: 'center' });
+            await this.wait(100);
+        }
+
         const validation = this.validateActionableElement(element, 'click');
         if (!validation.valid) {
-            Logger.warn('EXECUTOR', `Blocked click: ${validation.reason}`);
+            Logger.warn('EXECUTOR', `Blocked click: ${validation.reason}`, {
+                rect: element.getBoundingClientRect().toJSON?.() || element.getBoundingClientRect(),
+                viewport: { width: window.innerWidth, height: window.innerHeight }
+            });
             return { clicked: false, blocked: true, errorCode: validation.errorCode, reason: validation.reason };
         }
 
-        element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        await this.wait(500);
+        element.scrollIntoView({ behavior: 'auto', block: 'center', inline: 'center' });
+        await this.wait(100);
 
         const postScrollValidation = this.validateActionableElement(element, 'click');
         if (!postScrollValidation.valid) {
@@ -288,10 +327,28 @@ class CommandExecutor {
         if (!element || element.tagName.toLowerCase() !== 'select') throw new Error('Target element is not a select');
         const validation = this.validateActionableElement(element, 'select');
         if (!validation.valid) return { selected: false, blocked: true, errorCode: validation.errorCode, reason: validation.reason };
+        const options = Array.from(element.options);
+        const normalizedValue = value == null ? '' : String(value).trim();
+        const normalizedLabel = label == null ? '' : String(label).trim().toLowerCase();
+
         let option = null;
-        if (value) option = Array.from(element.options).find(o => o.value === value);
-        else if (label) option = Array.from(element.options).find(o => o.textContent === label);
-        if (!option) throw new Error(`Option not found: value=${value}, label=${label}`);
+
+        if (normalizedValue) {
+            option = options.find(o => String(o.value).trim() === normalizedValue);
+        }
+
+        if (!option && normalizedLabel) {
+            option = options.find(o =>
+                String(o.textContent || '').trim().toLowerCase() === normalizedLabel
+            );
+        }
+
+        if (!option) {
+            throw new Error(
+                `Option not found: value=${value ?? 'none'}, label=${label ?? 'none'}; available=${options.map(o => String(o.textContent || '').trim()).join(', ')}`
+            );
+        }
+
         element.value = option.value;
         element.dispatchEvent(new Event('change', { bubbles: true }));
         await this.wait(200);

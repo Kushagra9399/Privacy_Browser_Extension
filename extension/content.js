@@ -54,6 +54,18 @@ class PrivacyBrowserAgent {
             const visionReady =
                 await this.visionProcessor.initialize();
 
+            // The agent loop is initialized before this content agent. Attach the
+            // already initialized VisionProcessor so every observation uses the
+            // same local privacy boundary.
+            if (window.agentLoop?.sessionManager) {
+                window.agentLoop.sessionManager.visionProcessor =
+                    this.visionProcessor;
+                Logger.log(
+                    'AGENT',
+                    'Agent loop connected to local vision processor'
+                );
+            }
+
             if (
                 !visionReady &&
                 this.config.ENABLE_LOCAL_VISION
@@ -793,6 +805,14 @@ class PrivacyBrowserAgent {
                         // ==================================================
                         // UNKNOWN MESSAGE
                         // ==================================================
+
+                        case 'popup_open':
+                        case 'popup_closed':
+                            // Popup lifecycle messages are consumed by the
+                            // floating UI. The content agent does not need to
+                            // treat them as agent commands.
+                            sendResponse({ success: true });
+                            return false;
 
                         default:
 

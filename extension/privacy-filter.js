@@ -10,10 +10,10 @@ class PrivacyFilter {
             detectEmails: true,
             detectCreditCards: true,
             detectPhones: true,
-            detectFaces: false, // Requires face detection model
+            detectFaces: true,
             detectSSN: true,
             detectSensitiveInputs: true,
-            redactionMode: 'blur', // 'blur', 'black', 'semantic'
+            redactionMode: 'black', // 'blur', 'black', 'semantic'
             blurRadius: 15,
             ...config
         };
@@ -272,6 +272,67 @@ class PrivacyFilter {
     }
 
     /**
+     * Convert local vision detections into privacy redactions.
+     * Only known sensitive classes are accepted. Unknown UI detections are
+     * never treated as PII automatically.
+     */
+    convertVisionDetections(detections, canvasWidth, canvasHeight) {
+        const sensitiveClasses = new Set([
+            'face',
+            'person_face',
+            'id_card',
+            'passport',
+            'drivers_license',
+            'signature',
+            'qr_code',
+            'barcode',
+            'credit_card',
+            'sensitive_document'
+        ]);
+
+        if (!Array.isArray(detections)) {
+            return [];
+        }
+
+        const redactions = [];
+
+        for (const detection of detections) {
+            const type = String(
+                detection?.className || detection?.label || ''
+            ).toLowerCase().trim();
+            const bbox = detection?.bbox;
+
+            if (!sensitiveClasses.has(type) || !bbox) {
+                continue;
+            }
+
+            const clipped = this.clipToCanvas(
+                { width: canvasWidth, height: canvasHeight },
+                Number(bbox.x) || 0,
+                Number(bbox.y) || 0,
+                Number(bbox.width) || 0,
+                Number(bbox.height) || 0
+            );
+
+            if (clipped.width <= 0 || clipped.height <= 0) {
+                continue;
+            }
+
+            redactions.push({
+                id: `vision_${Date.now()}_${redactions.length}`,
+                type,
+                bbox: clipped,
+                confidence: Number(detection.confidence) || 0,
+                reason: 'local_vision_sensitive_detection',
+                priority: 'critical'
+            });
+        }
+
+        this.detectionStats.sensitiveDetected += redactions.length;
+        return redactions;
+    }
+
+    /**
      * Apply redactions to canvas
      */
     applyRedactionsToCanvas(canvas, redactions) {
@@ -330,37 +391,29 @@ class PrivacyFilter {
      * Apply blur effect to the existing pixels in the redaction area
      */
     applyBlur(ctx, x, y, width, height) {
-        if (width <= 0 || height <= 0) {
-            return;
-        }
+        if (width <= 0 || height <= 0) return;
 
-        const imageData = ctx.getImageData(
-            x,
-            y,
-            width,
-            height
-        );
-
+        // Use a separate canvas as the filtered source. Drawing a canvas onto
+        // itself with ctx.filter is unreliable and can leave PII readable.
         const blurCanvas = document.createElement('canvas');
-        blurCanvas.width = width;
-        blurCanvas.height = height;
+        blurCanvas.width = Math.ceil(width);
+        blurCanvas.height = Math.ceil(height);
 
         const blurCtx = blurCanvas.getContext('2d');
-        if (!blurCtx) {
-            return;
-        }
+        if (!blurCtx) return;
 
-        blurCtx.putImageData(imageData, 0, 0);
         blurCtx.filter = `blur(${this.config.blurRadius}px)`;
-        blurCtx.drawImage(blurCanvas, 0, 0);
+        blurCtx.drawImage(
+            ctx.canvas,
+            x, y, width, height,
+            0, 0, blurCanvas.width, blurCanvas.height
+        );
         blurCtx.filter = 'none';
 
         ctx.drawImage(
             blurCanvas,
-            x,
-            y,
-            width,
-            height
+            0, 0, blurCanvas.width, blurCanvas.height,
+            x, y, width, height
         );
     }
 
